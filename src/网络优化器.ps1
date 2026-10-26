@@ -184,12 +184,15 @@ function Measure-DnsLatency {
     $times = @()
     foreach ($d in $Domains) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
+        $ok = $false
         try {
             if ($Fast) { $null = Resolve-DnsName $d -Server $Server -Type A -DnsOnly -QuickTimeout -ErrorAction Stop }
             else { $null = Resolve-DnsName $d -Server $Server -Type A -DnsOnly -ErrorAction Stop }
+            $ok = $true
         } catch { }
         $sw.Stop()
-        if ($sw.Elapsed.TotalMilliseconds -lt 3000) { $times += $sw.Elapsed.TotalMilliseconds }
+        # 只有成功的查询才计入耗时；失败（即使很快）不能当成"最快"
+        if ($ok -and $sw.Elapsed.TotalMilliseconds -lt 3000) { $times += $sw.Elapsed.TotalMilliseconds }
     }
     if ($times.Count -eq 0) { return 9999 }
     return [Math]::Round(($times | Measure-Object -Average).Average, 0)
