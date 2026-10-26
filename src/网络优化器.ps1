@@ -21,6 +21,7 @@ param(
     [switch]$Timeline,
     [switch]$Settings,
     [switch]$Help,
+[switch]$WifiList,
     [switch]$AutoClose,
     [string]$DataDirectory = '',
     [string]$Out = "$env:TEMP\netopt.png"
@@ -30,6 +31,11 @@ $ErrorActionPreference = 'Stop'
 
 # 项目根目录（src 的上一级）：config/ 与 runtime/ 都在这里
 $script:ProjRoot = Split-Path -Parent $PSScriptRoot
+
+# 网络列表模块（点源，避免 param 覆盖调用方变量）
+$prevNoRun = $NoRun
+. (Join-Path $PSScriptRoot 'lib\WifiList.ps1') -NoRun -WifiAction 'show'
+$NoRun = $prevNoRun
 
 if ($DataDirectory) { $script:DataRoot = $DataDirectory }
 
@@ -1468,6 +1474,396 @@ function Invoke-ModeFile {
 }
 
 
+function New-DialogButton($form, $text, $x, $y, $width) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.Location = New-Object System.Drawing.Point($x, $y)
+    $b.Size = New-Object System.Drawing.Size($width, 28)
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderSize = 0
+    $b.BackColor = $C.Btn
+    $b.ForeColor = [System.Drawing.Color]::White
+    $b.Cursor = 'Hand'
+    $b.Tag = $C.Btn
+    $b.Add_MouseEnter({ $this.BackColor = $C.BtnHover })
+    $b.Add_MouseLeave({ $this.BackColor = $this.Tag })
+    $form.Controls.Add($b)
+    return $b
+}
+
+function Get-NetworkReachability {
+    # 只看"有没有默认路由 + 网关通不通"，比 ping 公网更适合校园网（很多学校屏蔽 ICMP 外网）
+    $up = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty ifIndex)
+    $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+             Where-Object { $up -contains $_.ifIndex -and $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
+             Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } | Select-Object -First 1
+    if (-not $route) { return [pscustomobject]@{ Up = $false; Gateway = ''; Reason = '没有默认路由' } }
+    $gw = [string]$route.NextHop
+    $ok = $false
+    try {
+        $p = New-Object System.Net.NetworkInformation.Ping
+        $ok = ($p.Send($gw, 1200).Status -eq 'Success')
+        $p.Dispose()
+    } catch { $ok = $false }
+    return [pscustomobject]@{
+        Up      = $ok
+        Gateway = $gw
+        Reason  = $(if ($ok) { '' } else { "网关 $gw 不可达" })
+    }
+}
+
+function Add-WifiEvent($Kind, $Seconds) {
+    $path = Join-Path $script:DataRoot 'runtime\wifi-events.json'
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $list = @()
+    if (Test-Path $path) {
+        try { $list = @(Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $list = @() }
+    }
+    $list += [pscustomobject]@{ at = (Get-Date).ToString('s'); kind = $Kind; seconds = $Seconds }
+    # 只保留最近 500 条
+    if ($list.Count -gt 500) { $list = @($list | Select-Object -Last 500) }
+    [IO.File]::WriteAllText($path, ($list | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Invoke-WifiWatchdog {
+    # 断链判定：
+    #   连续不可达 >= 10 秒 → 记一次"断链"；< 10 秒自动恢复 → 只记"抖动"
+    #   工具自身重连期间记维护窗口，不计入
+    if ($script:wifiWatchBusy) { return }
+    $script:wifiWatchBusy = $true
+    try {
+        $reach = Get-NetworkReachability
+        if ($reach.Up) {
+            if ($script:wifiDownSince) {
+                $secs = [int]((Get-Date) - $script:wifiDownSince).TotalSeconds
+                if ($secs -ge 10) {
+                    Add-WifiEvent '断链' $secs
+                    Write-Log ("网络已恢复（中断 $secs 秒，记为断链）") 'warn'
+                } else {
+                    Add-WifiEvent '抖动' $secs
+                    Write-Log ("网络短暂中断 $secs 秒（抖动，不计入断链）") 'dim'
+                }
+                $script:wifiDownSince = $null
+            }
+            return
+        }
+
+        if (-not $script:wifiDownSince) {
+            $script:wifiDownSince = Get-Date
+            Write-Log ("检测到断网：" + $reach.Reason) 'warn'
+            return
+        }
+
+        $downFor = ((Get-Date) - $script:wifiDownSince).TotalSeconds
+        if ($downFor -lt 10) { return }
+
+        $list = $null
+        try { $list = Read-WifiList } catch { return }
+        if (-not $list -or -not $list.autoReconnect) { return }
+
+        $lastTry = $script:wifiLastRetry
+        if ($lastTry -and ((Get-Date) - $lastTry).TotalSeconds -lt 60) { return }
+        $script:wifiLastRetry = Get-Date
+
+        $order = @(Get-ReconnectOrder $list)
+        if ($order.Count -eq 0) { return }
+
+        Add-IgnoreWindow '自动重连' 60
+        Write-Log ("已断网 " + [int]$downFor + " 秒，按列表尝试重连 ...") 'warn'
+        foreach ($n in $order) {
+            if (-not (Test-WifiInRange $n.ssid)) { continue }
+            Write-Log ("  尝试 " + $n.ssid) 'dim'
+            $ok = Connect-CampusWifi $n.ssid ([bool]$n.campus)
+            if ($ok) {
+                Write-Log ("  已重连到 " + $n.ssid) 'ok'
+                return
+            }
+        }
+        Write-Log '列表里的网络都连不上，等下一轮' 'err'
+    } catch {
+        # 看门狗自身不能把界面拖垮
+    } finally {
+        $script:wifiWatchBusy = $false
+    }
+}
+
+function Show-WifiListWindow {
+    $data = Read-WifiList
+
+    $w = New-Object System.Windows.Forms.Form
+    $w.Icon = $form.Icon
+    $w.Text = '我的网络列表'
+    $w.Size = New-Object System.Drawing.Size(800, 580)
+    $w.StartPosition = 'CenterParent'
+    $w.FormBorderStyle = 'FixedDialog'
+    $w.MaximizeBox = $false
+    $w.MinimizeBox = $false
+    $w.BackColor = $C.Bg
+    $w.ForeColor = $C.Text
+    $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = '断网时按列表顺序尝试重连。校园网条目填认证网址；普通网络依赖 Windows 已保存的密码（本工具不保存密码）。'
+    $hint.ForeColor = $C.Dim
+    $hint.Location = New-Object System.Drawing.Point(18, 14)
+    $hint.Size = New-Object System.Drawing.Size(750, 20)
+    $w.Controls.Add($hint)
+
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.Location = New-Object System.Drawing.Point(18, 40)
+    $lv.Size = New-Object System.Drawing.Size(750, 320)
+    $lv.View = 'Details'
+    $lv.FullRowSelect = $true
+    $lv.GridLines = $false
+    $lv.MultiSelect = $false
+    $lv.BackColor = $C.Card
+    $lv.ForeColor = $C.Text
+    $lv.BorderStyle = 'FixedSingle'
+    [void]$lv.Columns.Add('网络名称', 180)
+    [void]$lv.Columns.Add('类型', 70)
+    [void]$lv.Columns.Add('认证网址 / 密码', 380)
+    [void]$lv.Columns.Add('自动重连', 90)
+    $w.Controls.Add($lv)
+
+    function Refresh-WifiList {
+        $lv.Items.Clear()
+        foreach ($n in @($data.networks)) {
+            $kind = if ($n.campus) { '校园网' } else { '普通' }
+            $detail = if ($n.campus) { [string]$n.portalUrl } else { '系统已保存密码' }
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$n.ssid)
+            [void]$item.SubItems.Add($kind)
+            [void]$item.SubItems.Add($detail)
+            [void]$item.SubItems.Add($(if ($n.autoReconnect) { '开' } else { '关' }))
+            $item.Tag = $n
+            [void]$lv.Items.Add($item)
+        }
+    }
+
+    $btnAdd    = New-DialogButton $w '添加…'   18  372 100
+    $btnEdit   = New-DialogButton $w '编辑…'   128 372 100
+    $btnDel    = New-DialogButton $w '删除'    238 372 100
+    $btnCampus = New-DialogButton $w '设为校园网' 348 372 120
+    $btnNormal = New-DialogButton $w '设为普通'  478 372 110
+
+    $chkAuto = New-Object System.Windows.Forms.CheckBox
+    $chkAuto.Text = '断网时自动按列表顺序重连'
+    $chkAuto.ForeColor = $C.Text
+    $chkAuto.Location = New-Object System.Drawing.Point(18, 414)
+    $chkAuto.Size = New-Object System.Drawing.Size(320, 24)
+    $chkAuto.FlatStyle = 'Flat'
+    $chkAuto.Checked = [bool]$data.autoReconnect
+    $w.Controls.Add($chkAuto)
+
+    $btnSave   = New-DialogButton $w '保存'  520 452 110
+    $btnSave.BackColor = $C.Accent
+    $btnSave.Tag = $C.Accent
+    $btnCancel = New-DialogButton $w '取消'  640 452 110
+
+    $syncCampus = {
+        # 让「校园网登录」按钮拿到最新配置：把第一条校园网记录写回 campus-config.json
+        $campus = Get-CampusFromList $data
+        if (-not $campus) { return }
+        $cfgPath = Join-Path $script:DataRoot 'config\campus-config.json'
+        $doc = [ordered]@{}
+        if (Test-Path $cfgPath) {
+            try {
+                (Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties |
+                    ForEach-Object { $doc[$_.Name] = $_.Value }
+            } catch { }
+        }
+        $doc['ssid'] = [string]$campus.ssid
+        $doc['portalUrl'] = [string]$campus.portalUrl
+        $doc['ssidOpen'] = $true
+        $dir = Split-Path -Parent $cfgPath
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Save-ToolkitJson $doc $cfgPath
+    }
+
+    $btnAdd.Add_Click({
+        $n = Show-WifiEditDialog -Entry $null
+        if ($n) { $data.networks = @($data.networks) + $n; Refresh-WifiList }
+    })
+    $btnEdit.Add_Click({
+        if ($lv.SelectedItems.Count -eq 0) { return }
+        $old = $lv.SelectedItems[0].Tag
+        $n = Show-WifiEditDialog -Entry $old
+        if ($n) {
+            $idx = [array]::IndexOf(@($data.networks), $old)
+            $list = @($data.networks)
+            if ($idx -ge 0) { $list[$idx] = $n } else { $list += $n }
+            $data.networks = $list
+            Refresh-WifiList
+        }
+    })
+    $btnDel.Add_Click({
+        if ($lv.SelectedItems.Count -eq 0) { return }
+        $old = $lv.SelectedItems[0].Tag
+        $data.networks = @(@($data.networks) | Where-Object { $_ -ne $old })
+        Refresh-WifiList
+    })
+    $btnCampus.Add_Click({
+        if ($lv.SelectedItems.Count -eq 0) { return }
+        $n = $lv.SelectedItems[0].Tag
+        $n.campus = $true
+        if ([string]::IsNullOrWhiteSpace([string]$n.portalUrl)) {
+            $edited = Show-WifiEditDialog -Entry $n
+            if ($edited) { $n.portalUrl = $edited.portalUrl }
+        }
+        Refresh-WifiList
+    })
+    $btnNormal.Add_Click({
+        if ($lv.SelectedItems.Count -eq 0) { return }
+        $n = $lv.SelectedItems[0].Tag
+        $n.campus = $false
+        $n.portalUrl = ''
+        Refresh-WifiList
+    })
+
+    $btnSave.Add_Click({
+        $data.autoReconnect = [bool]$chkAuto.Checked
+        try {
+            $path = Save-WifiList $data
+            & $syncCampus
+            Write-Log ("网络列表已保存：{0} 个网络 -> {1}" -f @($data.networks).Count, [IO.Path]::GetFileName($path)) 'ok'
+            $w.DialogResult = 'OK'
+            $w.Close()
+        } catch {
+            [void][System.Windows.Forms.MessageBox]::Show("保存失败：$($_.Exception.Message)", '错误')
+        }
+    })
+    $btnCancel.Add_Click({ $w.DialogResult = 'Cancel'; $w.Close() })
+
+    Refresh-WifiList
+
+    if ($script:captureWifiList) {
+        $w.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 600
+        [System.Windows.Forms.Application]::DoEvents()
+        if (-not ('W2.Gdi' -as [type])) {
+            Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);'
+        }
+        $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
+        $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+        $hdc = $gfx.GetHdc()
+        $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
+        $gfx.ReleaseHdc($hdc); $gfx.Dispose()
+        $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bmp.Dispose()
+        $w.Close()
+        Write-Host "已保存: $($script:capturePath) (PrintWindow=$ok)"
+        return
+    }
+
+    [void]$w.ShowDialog()
+    $w.Dispose()
+}
+
+function Show-WifiEditDialog($Entry) {
+    $w = New-Object System.Windows.Forms.Form
+    $w.Icon = $form.Icon
+    $w.Text = if ($Entry) { '编辑网络' } else { '添加网络' }
+    $w.Size = New-Object System.Drawing.Size(520, 300)
+    $w.StartPosition = 'CenterParent'
+    $w.FormBorderStyle = 'FixedDialog'
+    $w.MaximizeBox = $false
+    $w.MinimizeBox = $false
+    $w.BackColor = $C.Bg
+    $w.ForeColor = $C.Text
+    $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+
+    $l1 = New-Object System.Windows.Forms.Label
+    $l1.Text = '网络名称（SSID）'
+    $l1.ForeColor = $C.Dim
+    $l1.Location = New-Object System.Drawing.Point(18, 18)
+    $l1.Size = New-Object System.Drawing.Size(120, 20)
+    $w.Controls.Add($l1)
+
+    $txtSsid = New-Object System.Windows.Forms.TextBox
+    $txtSsid.Location = New-Object System.Drawing.Point(140, 14)
+    $txtSsid.Size = New-Object System.Drawing.Size(330, 26)
+    $txtSsid.BackColor = $C.Card
+    $txtSsid.ForeColor = $C.Text
+    $txtSsid.BorderStyle = 'FixedSingle'
+    $w.Controls.Add($txtSsid)
+
+    $chkCampus = New-Object System.Windows.Forms.CheckBox
+    $chkCampus.Text = '这是校园网（下方填认证网址，而不是密码）'
+    $chkCampus.ForeColor = $C.Text
+    $chkCampus.Location = New-Object System.Drawing.Point(140, 50)
+    $chkCampus.Size = New-Object System.Drawing.Size(330, 24)
+    $chkCampus.FlatStyle = 'Flat'
+    $w.Controls.Add($chkCampus)
+
+    $l2 = New-Object System.Windows.Forms.Label
+    $l2.Text = '认证网址'
+    $l2.ForeColor = $C.Dim
+    $l2.Location = New-Object System.Drawing.Point(18, 88)
+    $l2.Size = New-Object System.Drawing.Size(120, 20)
+    $w.Controls.Add($l2)
+
+    $txtPortal = New-Object System.Windows.Forms.TextBox
+    $txtPortal.Location = New-Object System.Drawing.Point(140, 84)
+    $txtPortal.Size = New-Object System.Drawing.Size(330, 26)
+    $txtPortal.BackColor = $C.Card
+    $txtPortal.ForeColor = $C.Text
+    $txtPortal.BorderStyle = 'FixedSingle'
+    $w.Controls.Add($txtPortal)
+
+    $l3 = New-Object System.Windows.Forms.Label
+    $l3.Text = '普通网络不需要填密码：本工具用 Windows 已保存的配置重连。'
+    $l3.ForeColor = $C.Dim
+    $l3.Location = New-Object System.Drawing.Point(18, 118)
+    $l3.Size = New-Object System.Drawing.Size(460, 20)
+    $w.Controls.Add($l3)
+
+    $chkReconnect = New-Object System.Windows.Forms.CheckBox
+    $chkReconnect.Text = '断网时尝试重连这个网络'
+    $chkReconnect.ForeColor = $C.Text
+    $chkReconnect.Location = New-Object System.Drawing.Point(140, 146)
+    $chkReconnect.Size = New-Object System.Drawing.Size(300, 24)
+    $chkReconnect.FlatStyle = 'Flat'
+    $chkReconnect.Checked = $true
+    $w.Controls.Add($chkReconnect)
+
+    if ($Entry) {
+        $txtSsid.Text = [string]$Entry.ssid
+        $chkCampus.Checked = [bool]$Entry.campus
+        $txtPortal.Text = [string]$Entry.portalUrl
+        $chkReconnect.Checked = [bool]$Entry.autoReconnect
+    }
+    $txtPortal.Enabled = $chkCampus.Checked
+    $chkCampus.Add_CheckedChanged({ $txtPortal.Enabled = $chkCampus.Checked })
+
+    $btnOk = New-DialogButton $w '确定' 260 200 100
+    $btnOk.BackColor = $C.Accent
+    $btnOk.Tag = $C.Accent
+    $btnNo = New-DialogButton $w '取消' 370 200 100
+
+    $script:wifiEditResult = $null
+    $btnOk.Add_Click({
+        $ssid = $txtSsid.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($ssid)) {
+            [void][System.Windows.Forms.MessageBox]::Show('网络名称不能为空。', '提示')
+            return
+        }
+        if ($chkCampus.Checked -and [string]::IsNullOrWhiteSpace($txtPortal.Text.Trim())) {
+            [void][System.Windows.Forms.MessageBox]::Show('校园网需要填认证网址。', '提示')
+            return
+        }
+        $script:wifiEditResult = New-WifiEntry -Ssid $ssid -Campus ([bool]$chkCampus.Checked) `
+            -PortalUrl ([string]$txtPortal.Text.Trim()) -AutoReconnect ([bool]$chkReconnect.Checked)
+        $w.DialogResult = 'OK'
+        $w.Close()
+    })
+    $btnNo.Add_Click({ $w.DialogResult = 'Cancel'; $w.Close() })
+
+    [void]$w.ShowDialog()
+    $w.Dispose()
+    return $script:wifiEditResult
+}
+
 function Show-SettingsWindow {
     $cfgFile = Join-Path $script:DataRoot 'runtime\proxy-settings.json'
     $curExe = ''
@@ -1505,22 +1901,6 @@ $w.Size = New-Object System.Drawing.Size(660, 460)
     $txtExe.BorderStyle = 'FixedSingle'
     $w.Controls.Add($txtExe)
 
-    function New-DialogButton($form, $text, $x, $y, $width) {
-        $b = New-Object System.Windows.Forms.Button
-        $b.Text = $text
-        $b.Location = New-Object System.Drawing.Point($x, $y)
-        $b.Size = New-Object System.Drawing.Size($width, 28)
-        $b.FlatStyle = 'Flat'
-        $b.FlatAppearance.BorderSize = 0
-        $b.BackColor = $C.Btn
-        $b.ForeColor = [System.Drawing.Color]::White
-        $b.Cursor = 'Hand'
-        $b.Tag = $C.Btn
-        $b.Add_MouseEnter({ $this.BackColor = $C.BtnHover })
-        $b.Add_MouseLeave({ $this.BackColor = $this.Tag })
-        $form.Controls.Add($b)
-        return $b
-    }
 
     $btnBrowse = New-DialogButton $w '浏览…' 466 39 82
     $btnAuto   = New-DialogButton $w '自动检测' 552 39 82
@@ -1556,60 +1936,28 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $txtResult.Text = '点「测试连接」验证端口是否真的能当代理用。'
     $w.Controls.Add($txtResult)
 
-    # ---------- 校园网 ----------
-    $lCampus = New-Object System.Windows.Forms.Label
-    $lCampus.Text = '校园网（「校园网登录」按钮会用到；留空则该功能不可用）'
-    $lCampus.ForeColor = $C.Accent
-    $lCampus.Location = New-Object System.Drawing.Point(18, 226)
-    $lCampus.Size = New-Object System.Drawing.Size(600, 20)
-    $w.Controls.Add($lCampus)
+    # ---------- 我的网络列表 ----------
+    $lWifi = New-Object System.Windows.Forms.Label
+    $lWifi.Text = '我的网络列表（断网时按列表顺序重连；校园网条目填认证网址）'
+    $lWifi.ForeColor = $C.Accent
+    $lWifi.Location = New-Object System.Drawing.Point(18, 234)
+    $lWifi.Size = New-Object System.Drawing.Size(600, 20)
+    $w.Controls.Add($lWifi)
 
-    $lPortal = New-Object System.Windows.Forms.Label
-    $lPortal.Text = '认证页地址'
-    $lPortal.ForeColor = $C.Dim
-    $lPortal.Location = New-Object System.Drawing.Point(18, 254)
-    $lPortal.Size = New-Object System.Drawing.Size(90, 20)
-    $w.Controls.Add($lPortal)
+    $btnWifi = New-DialogButton $w '网络列表…' 18 258 140
+    $btnWifi.Add_Click({ Show-WifiListWindow })
 
-    $txtPortal = New-Object System.Windows.Forms.TextBox
-    $txtPortal.Location = New-Object System.Drawing.Point(112, 250)
-    $txtPortal.Size = New-Object System.Drawing.Size(340, 26)
-    $txtPortal.BackColor = $C.Card
-    $txtPortal.ForeColor = $C.Text
-    $txtPortal.BorderStyle = 'FixedSingle'
-    $w.Controls.Add($txtPortal)
+    $lWifiSummary = New-Object System.Windows.Forms.Label
+    $lWifiSummary.ForeColor = $C.Dim
+    $lWifiSummary.Location = New-Object System.Drawing.Point(170, 264)
+    $lWifiSummary.Size = New-Object System.Drawing.Size(460, 20)
+    $w.Controls.Add($lWifiSummary)
 
-    $lSsid = New-Object System.Windows.Forms.Label
-    $lSsid.Text = '校园 WiFi 名称'
-    $lSsid.ForeColor = $C.Dim
-    $lSsid.Location = New-Object System.Drawing.Point(18, 286)
-    $lSsid.Size = New-Object System.Drawing.Size(90, 20)
-    $w.Controls.Add($lSsid)
-
-    $txtSsid = New-Object System.Windows.Forms.TextBox
-    $txtSsid.Location = New-Object System.Drawing.Point(112, 282)
-    $txtSsid.Size = New-Object System.Drawing.Size(200, 26)
-    $txtSsid.BackColor = $C.Card
-    $txtSsid.ForeColor = $C.Text
-    $txtSsid.BorderStyle = 'FixedSingle'
-    $w.Controls.Add($txtSsid)
-
-    $chkOpen = New-Object System.Windows.Forms.CheckBox
-    $chkOpen.Text = '该 WiFi 是开放网络（无密码，可自动创建连接配置）'
-    $chkOpen.ForeColor = $C.Dim
-    $chkOpen.Location = New-Object System.Drawing.Point(320, 284)
-    $chkOpen.Size = New-Object System.Drawing.Size(320, 22)
-    $chkOpen.FlatStyle = 'Flat'
-    $w.Controls.Add($chkOpen)
-
-    # 预填当前配置
-    $curCampus = $null
-    try { $curCampus = Get-CampusConfig } catch { }
-    if ($curCampus) {
-        $txtPortal.Text = [string]$curCampus.portalUrl
-        $txtSsid.Text = [string]$curCampus.ssid
-        $chkOpen.Checked = [bool]$curCampus.ssidOpen
-    }
+    try {
+        $wl = Read-WifiList
+        $cnt = @($wl.networks).Count
+        $lWifiSummary.Text = ("已配置 {0} 个网络，自动重连：{1}" -f $cnt, $(if ($wl.autoReconnect) { '开' } else { '关' }))
+    } catch { $lWifiSummary.Text = '读取网络列表失败' }
 
     $btnSave   = New-DialogButton $w '保存' 432 380 96
     $btnSave.BackColor = $C.Accent
@@ -1703,22 +2051,6 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
             $cfgDir = Split-Path -Parent $cfgFile
             if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
             Save-ToolkitJson $ht $cfgFile
-            # 校园网配置写到数据目录（用户可写，版本升级不会丢）
-            $campusFile = Join-Path $script:DataRoot 'config\campus-config.json'
-            $campusJson = [ordered]@{}
-            if (Test-Path $campusFile) {
-                try {
-                    (Get-Content $campusFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties |
-                        ForEach-Object { $campusJson[$_.Name] = $_.Value }
-                } catch { }
-            }
-            $campusJson['portalUrl'] = $txtPortal.Text.Trim()
-            $campusJson['ssid'] = $txtSsid.Text.Trim()
-            $campusJson['ssidOpen'] = [bool]$chkOpen.Checked
-            if (-not $campusJson['internalNets']) { $campusJson['internalNets'] = @() }
-            $campusDir = Split-Path -Parent $campusFile
-            if (-not (Test-Path $campusDir)) { New-Item -ItemType Directory -Path $campusDir -Force | Out-Null }
-            Save-ToolkitJson $campusJson $campusFile
             $tail = if ($exe) { "，客户端 " + [System.IO.Path]::GetFileName($exe) } else { '，未设置客户端' }
             Write-Log ("设置已保存：端口 $p$tail") 'ok'
             Update-Status | Out-Null
@@ -1894,10 +2226,16 @@ $timer.Add_Tick({
 $form.Add_FormClosing({
     param($sender,$closingArgs)
     if ($script:busy) { $closingArgs.Cancel=$true; Write-Log '请等待当前操作结束后关闭，以免中断状态保存。' 'warn'; return }
-    foreach ($activeTimer in @($timer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
+    foreach ($activeTimer in @($timer,$script:wifiTimer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
     $restoreMenu.Dispose()
 })
 $timer.Start()
+
+    # 断网看门狗：15 秒检查一次，断链 >=10 秒才计数，恢复后按列表尝试重连
+    $script:wifiTimer = New-Object System.Windows.Forms.Timer
+    $script:wifiTimer.Interval = 15000
+    $script:wifiTimer.Add_Tick({ try { Invoke-WifiWatchdog } catch { } })
+    $script:wifiTimer.Start()
 
 $form.Add_Shown({
     try {
@@ -1970,6 +2308,13 @@ if ($Help) {
     $script:captureHelp = $true
     $script:capturePath = $Out
     Show-HelpWindow
+    return
+}
+
+if ($WifiList) {
+    $script:captureWifiList = $true
+    $script:capturePath = $Out
+    Show-WifiListWindow
     return
 }
 

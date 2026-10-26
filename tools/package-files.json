@@ -1,7 +1,7 @@
 [
   "src/网络优化器.ps1", "src/ProxyCtl.ps1", "src/ModeCtl.ps1",
   "src/lib/Common.ps1", "src/lib/NetworkState.ps1", "src/lib/CampusPortal.ps1",
-  "src/lib/CampusCheck.ps1", "src/lib/RouteGuard.ps1",
+  "src/lib/CampusCheck.ps1", "src/lib/RouteGuard.ps1", "src/lib/WifiList.ps1",
   "config/proxy-config.example.json", "config/campus-config.example.json",
   "assets/lingzhi.ico", "VERSION", "LICENSE", "README.md", "CHANGELOG.md",
   "docs/README.md", "docs/usage.txt", "docs/architecture.md", "docs/CONTRIBUTING.md",
