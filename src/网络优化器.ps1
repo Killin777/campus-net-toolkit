@@ -649,6 +649,7 @@ function Update-Status {
     } else {
         $txtDrop = '今日 {0} 次 —— 频繁掉线建议报修' -f $dc
         if ($script:dropCache.Ignored -gt 0) { $txtDrop += ('（已排除 {0} 次工具操作）' -f $script:dropCache.Ignored) }
+        if ($script:dropCache.Merged -gt 0) { $txtDrop += ('（已合并 {0} 次重复记录）' -f $script:dropCache.Merged) }
         $lbDrop.Text = $txtDrop
     }
     $lbDrop.ForeColor = if ($dc -eq 0) { $C.Ok } elseif ($dc -le 3) { $C.Warn } else { $C.Err }
@@ -888,20 +889,12 @@ $script:dropCache   = @{ Time = [datetime]::MinValue; Count = -1; Ignored = 0 }
 $script:ignoreCache = @{ Time = [datetime]::MinValue; Windows = @() }
 
 function Get-DisconnectCount {
-    # 统计今日"真实"断链：排除本工具自己触发的维护窗口
+    # 今日"真实"断链：工具记录 + 系统事件，去重并排除维护窗口
     if (((Get-Date) - $script:dropCache.Time).TotalSeconds -lt 60) { return $script:dropCache.Count }
-    $n = 0; $ig = 0
-    try {
-        $ev = Get-WinEvent -FilterHashtable @{
-            LogName   = 'Microsoft-Windows-WLAN-AutoConfig/Operational'
-            StartTime = (Get-Date).Date
-            Id        = 11004
-        } -ErrorAction Stop
-        foreach ($e in $ev) {
-            if (Test-IgnoredTime $e.TimeCreated) { $ig++ } else { $n++ }
-        }
-    } catch { }
-    $script:dropCache = @{ Time = (Get-Date); Count = $n; Ignored = $ig }
+    $u = Get-UnifiedLinkEvents -Days 2
+    $today = (Get-Date).Date
+    $n = @($u.Times | Where-Object { $_ -ge $today }).Count
+    $script:dropCache = @{ Time = (Get-Date); Count = $n; Ignored = $u.Ignored; Merged = $u.Merged }
     return $n
 }
 
@@ -1022,9 +1015,10 @@ function Get-TimelineStats {
 }
 
 function Show-TimelineWindow {
-    $allTimes = Get-WlanTimeline -Days 7
-    $times = @($allTimes | Where-Object { -not (Test-IgnoredTime $_) })
-    $excluded = @($allTimes).Count - @($times).Count
+    $u = Get-UnifiedLinkEvents -Days 7
+    $times = @($u.Times)
+    $excluded = $u.Ignored
+    $mergedCount = $u.Merged
     $st = Get-TimelineStats -Times $times
 
     $w = New-Object System.Windows.Forms.Form
@@ -1047,6 +1041,7 @@ function Show-TimelineWindow {
 
     $sumText = '今日 {0} 次 · 近 7 天 {1} 次 · 断链风暴 {2} 次' -f $st.Today, $st.Total, $st.Clusters
     if ($excluded -gt 0) { $sumText += (" · 已排除 {0} 次工具操作" -f $excluded) }
+    if ($mergedCount -gt 0) { $sumText += (" · 已合并 {0} 次重复记录" -f $mergedCount) }
     if ($st.WorstCount -ge 3 -and $st.WorstStart) {
         $sumText += (' · 最密集 {0}（{1} 次）' -f $st.WorstStart.ToString('MM-dd HH:mm'), $st.WorstCount)
     }
@@ -1150,8 +1145,6 @@ function Show-TimelineWindow {
         $hdc = $gfx.GetHdc()
         $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
         $gfx.ReleaseHdc($hdc); $gfx.Dispose()
-        Write-Host ("诊断: 选中 {0} 项；↑可见={1} 位置={2},{3}；↓可见={4} 位置={5},{6}；列表右={7}" -f `
-            $btnDown.Visible, $btnDown.Location.X, $btnDown.Location.Y, $lv.Right)
         $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
         $bmp.Dispose()
         $w.Close()
@@ -1587,18 +1580,80 @@ function Test-NetworkQuality {
 }
 
 
-function Add-WifiEvent($Kind, $Seconds) {
-    $path = Join-Path $script:DataRoot 'runtime\wifi-events.json'
+function Get-LinkEventStore {
+    # 工具自己记录的断链/抖动（含持续时间），单一数据源
+    $path = Join-Path $script:DataRoot 'runtime\link-events.json'
+    $out = @()
+    if (Test-Path -LiteralPath $path) {
+        try {
+            foreach ($e in @(Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+                if (-not $e -or -not $e.at) { continue }
+                $out += [pscustomobject]@{
+                    At      = [datetime]$e.at
+                    Kind    = [string]$e.kind
+                    Seconds = [int]$e.seconds
+                    Source  = if ($e.source) { [string]$e.source } else { 'watchdog' }
+                }
+            }
+        } catch { }
+    }
+    return @($out)
+}
+
+function Add-LinkEvent($Kind, $Seconds, $Source = 'watchdog') {
+    $path = Join-Path $script:DataRoot 'runtime\link-events.json'
     $dir = Split-Path -Parent $path
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $list = @()
-    if (Test-Path $path) {
-        try { $list = @(Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $list = @() }
+    $list = @(Get-LinkEventStore)
+    $list += [pscustomobject]@{ At = (Get-Date); Kind = $Kind; Seconds = $Seconds; Source = $Source }
+    # 只保留最近 30 天
+    $cut = (Get-Date).AddDays(-30)
+    $list = @($list | Where-Object { $_.At -ge $cut })
+    $doc = @($list | ForEach-Object {
+        [ordered]@{ at = $_.At.ToString('s'); kind = $_.Kind; seconds = $_.Seconds; source = $_.Source }
+    })
+    [IO.File]::WriteAllText($path, ($doc | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Get-SystemDisconnectTimes([int]$Days = 7) {
+    $since = (Get-Date).AddDays(-$Days)
+    try {
+        $ev = Get-WinEvent -FilterHashtable @{
+            LogName   = 'Microsoft-Windows-WLAN-AutoConfig/Operational'
+            StartTime = $since
+            Id        = 11004
+        } -ErrorAction Stop
+        return @($ev | Sort-Object TimeCreated | ForEach-Object { $_.TimeCreated })
+    } catch { return @() }
+}
+
+function Get-UnifiedLinkEvents([int]$Days = 7) {
+    # 合并两个来源：
+    #   1) 工具自己记录的断链（有持续时间、已排除维护窗口）
+    #   2) 系统 WLAN 事件 11004 —— 只补工具没在跑的时候
+    # 同一次断链两边都会记，用 ±90 秒窗口去重
+    $since = (Get-Date).AddDays(-$Days)
+    $store = @(Get-LinkEventStore | Where-Object { $_.At -ge $since -and $_.Kind -eq '断链' })
+    $sys = @(Get-SystemDisconnectTimes -Days $Days)
+
+    $times = New-Object System.Collections.ArrayList
+    foreach ($e in $store) { [void]$times.Add($e.At) }
+
+    $ignored = 0
+    $merged = 0
+    foreach ($t in $sys) {
+        if (Test-IgnoredTime $t) { $ignored++; continue }
+        $near = @($store | Where-Object { [Math]::Abs(($_.At - $t).TotalSeconds) -le 90 })
+        if ($near.Count -gt 0) { $merged++; continue }
+        [void]$times.Add($t)
     }
-    $list += [pscustomobject]@{ at = (Get-Date).ToString('s'); kind = $Kind; seconds = $Seconds }
-    # 只保留最近 500 条
-    if ($list.Count -gt 500) { $list = @($list | Select-Object -Last 500) }
-    [IO.File]::WriteAllText($path, ($list | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+
+    return [pscustomobject]@{
+        Times   = @($times | Sort-Object)
+        SystemN = $sys.Count
+        Ignored = $ignored
+        Merged  = $merged
+    }
 }
 
 function Invoke-WifiWatchdog {
@@ -1613,10 +1668,10 @@ function Invoke-WifiWatchdog {
             if ($script:wifiDownSince) {
                 $secs = [int]((Get-Date) - $script:wifiDownSince).TotalSeconds
                 if ($secs -ge 10) {
-                    Add-WifiEvent '断链' $secs
+                    Add-LinkEvent '断链' $secs
                     Write-Log ("网络已恢复（中断 $secs 秒，记为断链）") 'warn'
                 } else {
-                    Add-WifiEvent '抖动' $secs
+                    Add-LinkEvent '抖动' $secs
                     Write-Log ("网络短暂中断 $secs 秒（抖动，不计入断链）") 'dim'
                 }
                 $script:wifiDownSince = $null
