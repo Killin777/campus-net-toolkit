@@ -1,0 +1,8 @@
+{
+  "portalUrl": "",
+  "httpsProbe": "https://www.baidu.com",
+  "internalDomains": [],
+  "internalNets": [],
+  "ssid": "",
+  "ssidOpen": false
+}

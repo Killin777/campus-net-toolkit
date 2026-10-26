@@ -1,0 +1,15 @@
+{
+  "tool": "built-in image_gen",
+  "variants": [
+    {
+      "name": "蓝底白狐",
+      "file": "B-灵狐-圆形-蓝底白狐.png",
+      "prompt": "Use case: precise-object-edit. Create the updated 灵智 app icon from TWO reference images. Image 1 is the existing detailed blue-and-white fox identity: preserve its recognizable fox-head geometry, pointed paired ears, sweeping cheeks, pointed chin and clever narrow eyes. Image 2 (tiny circular purple badge with white fox) is the user's newly supplied STYLE AND LAYOUT reference, which overrides the previous dark rounded-square treatment. Match image 2's simple flat circular badge composition, but use BLUE AND WHITE, not purple. Final design: a true perfect circular saturated vivid azure/cobalt BLUE disk, inside it a centered solid WHITE geometric fox face with two pointed ears and sweeping cheeks; smart small eye cutouts and tiny nose are blue negative space. The fox's simplified white silhouette is inspired by image 1 but is clean and unified like image 2, minimal internal detail. Keep all ear tips and cheek edges entirely within the blue circle, with ample even blue margin. Head fills about 68-72% of circle width. Circle fills about 86% of square canvas. Outside the blue circle is actual transparency. Predominantly flat vector-like artwork, at most a very subtle blue gradient in circle, no 3D bevel, no heavy shading, no dark charcoal disk, no outer ring, no rounded square, no purple or pink, no orange. One memorable small-size Windows taskbar/tray app icon. Exact circular outer silhouette, high contrast, sharp clean anti-aliased edges, no lettering, no text, no mockup."
+    },
+    {
+      "name": "深底蓝边",
+      "file": "B-灵狐-圆形-深底蓝边.png",
+      "prompt": "Use case: precise-object-edit. Edit the referenced blue-and-white fox app icon. User request: enclose it with a circular outer contour. Replace the existing charcoal rounded-square backing with a PERFECTLY CIRCULAR charcoal disk and a clean slim cobalt-blue circular perimeter rim. The overall outer silhouette must be a true circle, with transparent background outside that circle. Center the fox inside the circle and proportionally reduce it just enough that BOTH ear tips and all cheek tips and the lower chin fit comfortably INSIDE the circle with a little breathing room; no cropping or protruding parts. Preserve the fox's existing exact geometric design, bilateral symmetry, sharp ears, smart dark narrow eyes, swooping cheeks, tiny charcoal nose, blue gradients, white muzzle and chin, existing subtle dimensional shading. Do not redraw its identity. The ONLY changes are backing shape to circle, slim circular outline, and necessary uniform scaling to fit. Keep a dark charcoal disk behind the fox. Clean precision edges, square canvas, centered badge fills about 88% of canvas. No rounded square anywhere. No text, no words, no added decoration, no mockup, one standalone icon. Actual transparent background beyond the circular badge."
+    }
+  ]
+}

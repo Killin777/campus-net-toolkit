@@ -1,0 +1,29 @@
+# 运行时产物（不应提交）
+runtime/*
+!runtime/.gitkeep
+config/proxy-config.json
+config/campus-config.json
+
+# 日志与备份
+*.log
+*-backup-*.json
+
+# 截图（可能包含本机网络信息）
+*.png
+
+# 本地测试沙箱 / 发布归档
+_qa/
+dist/
+release/
+
+# 系统文件
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 构建产物校验文件
+*.sha256
