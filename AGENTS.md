@@ -52,6 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\网络优化器.ps1 -Scr
 | 界面中文乱码 | 子进程输出编码不一致 | 用 `Invoke-ChildCapture`（字节级解码） |
 | 模式切换被永久卡死 | 受保护服务（DoSvc）改不动却写进了还原记录 | 一开始就不要记录它 |
 | 关不掉提权窗口 | UIPI 拦截低权限消息 | 用 `-AutoClose` 等自带开关验证 |
+| 保存设置报"SelectionColor 异常" | 局部变量 `$c` 覆盖了主题对象 `$C`（变量名不区分大小写） | 不要用与 `$C` 同名的局部变量 |
 
 ## 汇报格式
 

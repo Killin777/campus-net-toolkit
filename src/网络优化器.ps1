@@ -1673,20 +1673,20 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
             Save-ToolkitJson $ht $cfgFile
             # 校园网配置写到数据目录（用户可写，版本升级不会丢）
             $campusFile = Join-Path $script:DataRoot 'config\campus-config.json'
-            $c = [ordered]@{}
+            $campusJson = [ordered]@{}
             if (Test-Path $campusFile) {
                 try {
                     (Get-Content $campusFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties |
-                        ForEach-Object { $c[$_.Name] = $_.Value }
+                        ForEach-Object { $campusJson[$_.Name] = $_.Value }
                 } catch { }
             }
-            $c['portalUrl'] = $txtPortal.Text.Trim()
-            $c['ssid'] = $txtSsid.Text.Trim()
-            $c['ssidOpen'] = [bool]$chkOpen.Checked
-            if (-not $c['internalNets']) { $c['internalNets'] = @() }
+            $campusJson['portalUrl'] = $txtPortal.Text.Trim()
+            $campusJson['ssid'] = $txtSsid.Text.Trim()
+            $campusJson['ssidOpen'] = [bool]$chkOpen.Checked
+            if (-not $campusJson['internalNets']) { $campusJson['internalNets'] = @() }
             $campusDir = Split-Path -Parent $campusFile
             if (-not (Test-Path $campusDir)) { New-Item -ItemType Directory -Path $campusDir -Force | Out-Null }
-            Save-ToolkitJson $c $campusFile
+            Save-ToolkitJson $campusJson $campusFile
             $tail = if ($exe) { "，客户端 " + [System.IO.Path]::GetFileName($exe) } else { '，未设置客户端' }
             Write-Log ("设置已保存：端口 $p$tail") 'ok'
             Update-Status | Out-Null
