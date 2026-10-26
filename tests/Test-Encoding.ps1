@@ -45,7 +45,7 @@ foreach ($d in @('src', 'src\lib', 'legacy', 'tests', 'tools')) {
 }
 
 # ---------- .cmd：GBK ----------
-foreach ($f in (Get-ChildItem $root -Filter '*.cmd' -File)) {
+foreach ($f in (Get-ChildItem $root -Filter '*.cmd' -File -Recurse)) {
     $total++
     $b = [System.IO.File]::ReadAllBytes($f.FullName)
     if (Test-HasBom $b) {

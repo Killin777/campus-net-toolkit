@@ -212,7 +212,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Format.ps1 -Fix
 powershell -NoProfile -ExecutionPolicy Bypass -File .\src\网络优化器.ps1 -Screenshot -Out docs\_ui.png
 ```
 
-**改代码前必读**：[AGENTS.md](AGENTS.md)（最小约束集）、[docs/SYSTEM-PROMPT.md](docs/SYSTEM-PROMPT.md)（完整规范）。
+**改代码前必读**：[docs/AGENTS.md](docs/AGENTS.md)（最小约束集）、[docs/SYSTEM-PROMPT.md](docs/SYSTEM-PROMPT.md)（完整规范）。
 
 关键约束：`.ps1` 必须 UTF-8 带 BOM + CRLF；`.cmd` 必须 GBK；只用 PowerShell 5.1 语法；改完必须重建 exe 并关掉旧窗口再启动。
 
@@ -221,8 +221,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\src\网络优化器.ps1 -S
 - [修改须知](docs/CONTRIBUTING.md) — 编码、目录、点源、备份、同步、合规、自检清单
 - [项目架构](docs/architecture.md) — 代码入口、数据路径、构建与测试边界
 - [使用说明](docs/usage.txt) — 逐个按钮的解释
-- [功能审查](docs/product-review.md) — 已知限制与保留理由
-- [验证记录](docs/verification.md) — 实际执行过的检查与未实测的边界
+- [功能审查](docs/internal/product-review.md) — 已知限制与保留理由
+- [验证记录](docs/internal/verification.md) — 实际执行过的检查与未实测的边界
 
 ---
 
