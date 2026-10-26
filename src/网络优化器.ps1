@@ -868,16 +868,6 @@ function Invoke-LatencyTest {
 
 
 
-function Invoke-ProxyToggle {
-    try {
-        $info=Get-NetInfo
-        if (-not $info.ProxyOn) { Write-Log '手动系统代理已经关闭；PAC、TUN 和 VPN 请单独检查。' 'dim'; return }
-        Set-ProxyState -Enable $false
-        Write-Log '手动系统代理已关闭，原值已备份。PAC、TUN、VPN 设置未自动修改。' 'ok'
-        Update-Status | Out-Null
-    } catch { Write-Log ('关闭代理未完成：'+$_.Exception.Message) 'err' }
-}
-
 function Invoke-Rescue {
     if ([Windows.Forms.MessageBox]::Show("将清理无法连接的手动代理、刷新 DNS，并尝试续租当前网卡的 DHCP 地址。需要重启网卡时会另行询问。`n`n继续？",'网络急救','YesNo','Question') -ne 'Yes') { return }
     Set-Busy $true
@@ -995,19 +985,6 @@ function Invoke-RestoreBackup {
         Update-Status | Out-Null
     } catch { Write-Log ('恢复未完成，备份仍保留：' + $_.Exception.Message) 'err' }
     finally { $dialog.Dispose(); Set-Busy $false }
-}
-
-function Get-WlanTimeline {
-    param([int]$Days = 7)
-    $since = (Get-Date).AddDays(-$Days)
-    try {
-        $ev = Get-WinEvent -FilterHashtable @{
-            LogName   = 'Microsoft-Windows-WLAN-AutoConfig/Operational'
-            StartTime = $since
-            Id        = 11004
-        } -ErrorAction Stop
-        return @($ev | Sort-Object TimeCreated | ForEach-Object { $_.TimeCreated })
-    } catch { return @() }
 }
 
 function Get-TimelineStats {
@@ -1285,25 +1262,6 @@ function Get-CampusConfig {
     return [pscustomobject]$merged
 }
 
-function Test-OnCampusNetwork($cfg, $info) {
-    # 用配置里的校内网段判断；当前用手机热点时 IP/网关都是 192.168.x，一定不匹配
-    $nets = @($cfg.internalNets | Where-Object { $_ })
-    if ($nets.Count -eq 0) { return $true }   # 没配网段就不拦，避免误伤
-    foreach ($n in $nets) {
-        if ($info.IP -like "$n*") { return $true }
-        if ($info.Gateway -like "$n*") { return $true }
-    }
-    return $false
-}
-
-function Test-InternetDirect {
-    # 绕过系统代理，测"真直连"能不能上网（用于判断是否已通过认证）
-    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
-    if (-not (Test-Path $curl)) { return $false }
-    $code = & $curl --noproxy '*' -s -o NUL -w '%{http_code}' --max-time 5 'http://www.baidu.com' 2>$null
-    return ("$code" -match '^(200|30[0-9])$')
-}
-
 function Test-PortalReachable([string]$Url) {
     try {
         $u = [Uri]$Url
@@ -1450,47 +1408,6 @@ function Open-CampusLogin {
     } catch {
         Write-Log ('调用浏览器失败：' + $_.Exception.Message) 'err'
         try { Start-Process 'explorer.exe' $url } catch { }
-    }
-}
-
-function Invoke-PortalCheck {
-    # 只检测 + 打开登录页；账号密码由用户自己在浏览器输入
-    $cp = Join-Path $PSScriptRoot 'lib\CampusPortal.ps1'
-    if (-not (Test-Path $cp)) { return }
-    $res = Invoke-ChildCapture -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $cp, 'json')
-    $st = $null
-    try { $st = (($res.Lines -join "`r`n") | ConvertFrom-Json) } catch { return }
-
-    if ($st.Authenticated) {
-        Write-Log '校园网：已联网（连通性探测 + HTTPS 实测均通过）' 'ok'
-        if ($st.Probe) { Write-Log ('      探测点：' + $st.Probe) 'dim' }
-        return
-    }
-
-    Write-Log ('校园网：可能需要登录 —— ' + $st.Detail) 'warn'
-    if ($st.PortalUrl) { Write-Log ('      登录页：' + $st.PortalUrl) 'dim' }
-
-    # 节流：10 分钟内只提醒一次
-    $stateFile = Join-Path $script:DataRoot 'runtime\portal-last.json'
-    if (Test-Path $stateFile) {
-        try {
-            $last = (Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json).last
-            if ($last -and ((Get-Date) - [datetime]$last).TotalMinutes -lt 10) { return }
-        } catch { }
-    }
-    $dir = Split-Path -Parent $stateFile
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    [pscustomobject]@{ last = (Get-Date).ToString('s') } | ConvertTo-Json | Set-Content $stateFile -Encoding UTF8
-
-    if (-not $st.PortalUrl) { return }
-    $r = [System.Windows.Forms.MessageBox]::Show(
-        ("检测到可能尚未登录校园网。`n`n" + $st.Detail + "`n`n是否打开登录页面？`n（账号密码请自行输入，浏览器会提示是否记住）"),
-        '校园网登录', 'YesNo', 'Question')
-    if ($r -eq 'Yes') {
-        $portalUri=$null
-        if (-not [Uri]::TryCreate([string]$st.PortalUrl,[UriKind]::Absolute,[ref]$portalUri) -or $portalUri.Scheme -notin @('http','https') -or -not $portalUri.Host) { Write-Log '登录页地址无效，仅允许 HTTP/HTTPS 网页。' 'warn'; return }
-        Start-Process -FilePath $portalUri.AbsoluteUri
-        Write-Log '已打开校园网登录页' 'ok'
     }
 }
 
