@@ -1116,6 +1116,8 @@ function Show-TimelineWindow {
         $hdc = $gfx.GetHdc()
         $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
         $gfx.ReleaseHdc($hdc); $gfx.Dispose()
+        Write-Host ("诊断: 选中 {0} 项；↑可见={1} 位置={2},{3}；↓可见={4} 位置={5},{6}；列表右={7}" -f `
+            $btnDown.Visible, $btnDown.Location.X, $btnDown.Location.Y, $lv.Right)
         $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
         $bmp.Dispose()
         $w.Close()
@@ -1653,7 +1655,7 @@ function Show-WifiListWindow {
     $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
 
     $hint = New-Object System.Windows.Forms.Label
-    $hint.Text = '断网时按列表顺序尝试重连。校园网条目填认证网址；普通网络依赖 Windows 已保存的密码（本工具不保存密码）。'
+    $hint.Text = '断网时按优先级重连（1 最先）；选中某行后点右侧 ▲▼ 调整顺序'
     $hint.ForeColor = $C.Dim
     $hint.Location = New-Object System.Drawing.Point(18, 14)
     $hint.Size = New-Object System.Drawing.Size(750, 20)
@@ -1661,7 +1663,7 @@ function Show-WifiListWindow {
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.Location = New-Object System.Drawing.Point(18, 40)
-    $lv.Size = New-Object System.Drawing.Size(750, 320)
+    $lv.Size = New-Object System.Drawing.Size(706, 320)
     $lv.View = 'Details'
     $lv.FullRowSelect = $true
     $lv.GridLines = $false
@@ -1669,9 +1671,10 @@ function Show-WifiListWindow {
     $lv.BackColor = $C.Card
     $lv.ForeColor = $C.Text
     $lv.BorderStyle = 'FixedSingle'
-    [void]$lv.Columns.Add('网络名称', 180)
+    [void]$lv.Columns.Add('优先级', 60)
+    [void]$lv.Columns.Add('网络名称', 150)
     [void]$lv.Columns.Add('类型', 70)
-    [void]$lv.Columns.Add('认证网址 / 密码', 380)
+    [void]$lv.Columns.Add('认证网址 / 密码', 336)
     [void]$lv.Columns.Add('自动重连', 90)
     $w.Controls.Add($lv)
 
@@ -1680,7 +1683,8 @@ function Show-WifiListWindow {
         foreach ($n in @($data.networks)) {
             $kind = if ($n.campus) { '校园网' } else { '普通' }
             $detail = if ($n.campus) { [string]$n.portalUrl } else { '系统已保存密码' }
-            $item = New-Object System.Windows.Forms.ListViewItem([string]$n.ssid)
+            $item = New-Object System.Windows.Forms.ListViewItem([string](@($data.networks).IndexOf($n) + 1))
+            [void]$item.SubItems.Add([string]$n.ssid)
             [void]$item.SubItems.Add($kind)
             [void]$item.SubItems.Add($detail)
             [void]$item.SubItems.Add($(if ($n.autoReconnect) { '开' } else { '关' }))
@@ -1694,6 +1698,31 @@ function Show-WifiListWindow {
     $btnDel    = New-DialogButton $w '删除'    238 372 100
     $btnCampus = New-DialogButton $w '设为校园网' 348 372 120
     $btnNormal = New-DialogButton $w '设为普通'  478 372 110
+
+    # 选中某行时，行右侧出现上下箭头，用来调整重连优先级
+    $btnUp = New-Object System.Windows.Forms.Button
+    $btnUp.Text = [char]0x25B2
+    $btnUp.Size = New-Object System.Drawing.Size(30, 24)
+    $btnUp.FlatStyle = 'Flat'
+    $btnUp.FlatAppearance.BorderSize = 0
+    $btnUp.BackColor = $C.Card2
+    $btnUp.ForeColor = $C.Text
+    $btnUp.Visible = $false
+    $btnUp.Cursor = 'Hand'
+    $w.Controls.Add($btnUp)
+    $btnUp.BringToFront()
+
+    $btnDown = New-Object System.Windows.Forms.Button
+    $btnDown.Text = [char]0x25BC
+    $btnDown.Size = New-Object System.Drawing.Size(30, 24)
+    $btnDown.FlatStyle = 'Flat'
+    $btnDown.FlatAppearance.BorderSize = 0
+    $btnDown.BackColor = $C.Card2
+    $btnDown.ForeColor = $C.Text
+    $btnDown.Visible = $false
+    $btnDown.Cursor = 'Hand'
+    $w.Controls.Add($btnDown)
+    $btnDown.BringToFront()
 
     $chkAuto = New-Object System.Windows.Forms.CheckBox
     $chkAuto.Text = '断网时自动按列表顺序重连'
@@ -1742,7 +1771,10 @@ function Show-WifiListWindow {
             $list = @($data.networks)
             if ($idx -ge 0) { $list[$idx] = $n } else { $list += $n }
             $data.networks = $list
+    # 选中行时把上下箭头贴到该行右侧；点箭头交换顺序（顺序即重连优先级）
+
             Refresh-WifiList
+
         }
     })
     $btnDel.Add_Click({
@@ -1785,8 +1817,62 @@ function Show-WifiListWindow {
 
     Refresh-WifiList
 
+    # 事件处理器拿不到函数内的局部变量，所以这里统一挂到 $script: 作用域
+    $script:wifiLv = $lv
+    $script:wifiUp = $btnUp
+    $script:wifiDown = $btnDown
+    $script:wifiData = $data
+
+    $script:UpdateWifiArrows = {
+        $lv2 = $script:wifiLv
+        $up = $script:wifiUp
+        $down = $script:wifiDown
+        if (-not $lv2 -or -not $up -or -not $down) { return }
+        if ($lv2.SelectedItems.Count -eq 0) { $up.Visible = $false; $down.Visible = $false; return }
+        $idx = $lv2.SelectedItems[0].Index
+        $rect = $lv2.GetItemRect($idx)
+        if ($rect.Height -le 0) { $up.Visible = $false; $down.Visible = $false; return }
+        $x = $lv2.Right + 6
+        $y = $lv2.Top + $rect.Top + [int](($rect.Height - 24) / 2)
+        $up.Location = New-Object System.Drawing.Point($x, ($y - 26))
+        $down.Location = New-Object System.Drawing.Point($x, $y)
+        $up.Visible = ($idx -gt 0)
+        $down.Visible = ($idx -lt ($lv2.Items.Count - 1))
+        $up.BringToFront(); $down.BringToFront()
+    }
+
+    $script:MoveWifiItem = {
+        param([int]$Delta)
+        $lv2 = $script:wifiLv
+        if (-not $lv2 -or $lv2.SelectedItems.Count -eq 0) { return }
+        $idx = $lv2.SelectedItems[0].Index
+        $newIdx = $idx + $Delta
+        $list = @($script:wifiData.networks)
+        if ($newIdx -lt 0 -or $newIdx -ge $list.Count) { return }
+        $tmp = $list[$idx]
+        $list[$idx] = $list[$newIdx]
+        $list[$newIdx] = $tmp
+        $script:wifiData.networks = $list
+        Refresh-WifiList
+        if ($newIdx -lt $lv2.Items.Count) {
+            $lv2.Items[$newIdx].Selected = $true
+            $lv2.Items[$newIdx].Focused = $true
+        }
+        & $script:UpdateWifiArrows
+    }
+
+    $lv.Add_SelectedIndexChanged({ & $script:UpdateWifiArrows })
+    $lv.Add_Click({ & $script:UpdateWifiArrows })
+    $btnUp.Add_Click({ & $script:MoveWifiItem -1 })
+    $btnDown.Add_Click({ & $script:MoveWifiItem 1 })
+
     if ($script:captureWifiList) {
         $w.Show()
+        if ($lv.Items.Count -gt 0) {
+            $lv.Items[0].Selected = $true
+            $lv.Items[0].Focused = $true
+            & $script:UpdateWifiArrows
+        }
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 600
         [System.Windows.Forms.Application]::DoEvents()
