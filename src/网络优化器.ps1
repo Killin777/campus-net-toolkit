@@ -727,11 +727,11 @@ function Invoke-DnsOptimize {
 
     Write-Log ("开始实测 " + $cands.Count + " 个 DNS（每家 2 次查询，约 5~15 秒）...") 'dim'
     $results = @()
-    foreach ($c in $cands) {
-        $ms = Measure-DnsLatency -Server $c.Ip -Fast
-        $results += [pscustomobject]@{ Server = $c.Ip; Name = $c.Name; Ms = $ms }
+    foreach ($cand in $cands) {
+        $ms = Measure-DnsLatency -Server $cand.Ip -Fast
+        $results += [pscustomobject]@{ Server = $cand.Ip; Name = $cand.Name; Ms = $ms }
         # 边测边出结果，避免十几秒没有反馈
-        $isGw = ($c.Ip -eq $i.Gateway)
+        $isGw = ($cand.Ip -eq $i.Gateway)
         if ($ms -ge 9999) {
             $tag = if ($isGw) { '网关不提供 DNS（正常）' } else { '超时 / 不可用' }
             $lvl = if ($isGw) { 'dim' } else { 'err' }
@@ -1362,9 +1362,9 @@ function Open-CampusLogin {
 
     # 2. 已在校园网且能直连上网时不需要再认证（只在真的连上校园网时才跳过）
     $onCampusNow = (-not [string]::IsNullOrWhiteSpace($ssid)) -and ((Get-CurrentWifiSsid) -eq $ssid)
-    if ($onCampusNow -and (Test-InternetDirect)) {
+    $quality = Test-NetworkQuality
+    if ($onCampusNow -and $quality.Usable) {
         Write-Log ('已连接到 ' + $ssid + ' 且能直连上网，无需认证') 'ok'
-        return
     }
 
     # 3. 认证页可达性
@@ -1512,6 +1512,45 @@ function Get-NetworkReachability {
     }
 }
 
+function Test-NetworkQuality {
+    # 判断"连上了但能不能真的上网"，区分三种情况：
+    #   在线     HTTP 直连正常
+    #   需认证   被劫持到认证页（校园网属正常）
+    #   假联网   网关通但 DNS/HTTP 都不行
+    $reach = Get-NetworkReachability
+    if (-not $reach.Up) {
+        return [pscustomobject]@{ Usable = $false; Kind = '无网关'; Detail = $reach.Reason }
+    }
+
+    $dnsOk = $false
+    try {
+        $dnsOk = [bool](Resolve-DnsName 'www.baidu.com' -Type A -ErrorAction Stop)
+    } catch { $dnsOk = $false }
+
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    if (-not (Test-Path $curl)) {
+        return [pscustomobject]@{ Usable = $dnsOk; Kind = $(if ($dnsOk) { '在线（未验证 HTTP）' } else { '假联网' }); Detail = '缺少 curl.exe' }
+    }
+
+    $out = & $curl --noproxy '*' -s -o NUL -w '%{http_code}|%{redirect_url}' --max-time 6 'http://www.baidu.com' 2>$null
+    $parts = ("$out").Trim() -split '\|'
+    $code = 0
+    [void][int]::TryParse($parts[0], [ref]$code)
+    $redirect = if ($parts.Count -gt 1) { [string]$parts[1] } else { '' }
+
+    if ($code -ge 200 -and $code -lt 400 -and [string]::IsNullOrWhiteSpace($redirect)) {
+        return [pscustomobject]@{ Usable = $true; Kind = '在线'; Detail = "HTTP $code" }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($redirect) -and $redirect -notmatch 'baidu\.com') {
+        return [pscustomobject]@{ Usable = $false; Kind = '需认证'; Detail = ('被重定向到 ' + $redirect) }
+    }
+    if ($dnsOk) {
+        return [pscustomobject]@{ Usable = $false; Kind = '假联网'; Detail = 'DNS 能解析，但 HTTP 出不去了' }
+    }
+    return [pscustomobject]@{ Usable = $false; Kind = '假联网'; Detail = 'DNS 与 HTTP 都不通' }
+}
+
+
 function Add-WifiEvent($Kind, $Seconds) {
     $path = Join-Path $script:DataRoot 'runtime\wifi-events.json'
     $dir = Split-Path -Parent $path
@@ -1575,10 +1614,20 @@ function Invoke-WifiWatchdog {
             if (-not (Test-WifiInRange $n.ssid)) { continue }
             Write-Log ("  尝试 " + $n.ssid) 'dim'
             $ok = Connect-CampusWifi $n.ssid ([bool]$n.campus)
-            if ($ok) {
-                Write-Log ("  已重连到 " + $n.ssid) 'ok'
+            if (-not $ok) { Write-Log ("  连不上 " + $n.ssid) 'dim'; continue }
+
+            # 连上不等于能上网：判一次质量，假联网就继续找下一个
+            $q = Test-NetworkQuality
+            if ($q.Usable) {
+                Write-Log ("  已重连到 " + $n.ssid + "（" + $q.Kind + "）") 'ok'
                 return
             }
+            if ($q.Kind -eq '需认证' -and $n.campus) {
+                Write-Log ("  已连上 " + $n.ssid + "，但需要校园网认证（" + $q.Detail + "）") 'warn'
+                Write-Log '  点「校园网登录」完成认证' 'dim'
+                return
+            }
+            Write-Log ("  " + $n.ssid + " 是假联网（" + $q.Kind + "：" + $q.Detail + "），继续下一个") 'warn'
         }
         Write-Log '列表里的网络都连不上，等下一轮' 'err'
     } catch {
