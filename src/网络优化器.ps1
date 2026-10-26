@@ -21,6 +21,7 @@ param(
     [switch]$Timeline,
     [switch]$Settings,
     [switch]$Help,
+[switch]$DnsList,
 [switch]$WifiList,
     [switch]$AutoClose,
     [string]$DataDirectory = '',
@@ -64,18 +65,51 @@ $C = @{
 }
 
 # DNS 优选候选（国内公共 DNS，按运营商自选）
-$script:DnsList = @(
-    [pscustomobject]@{ Ip = '223.5.5.5';       Name = '阿里 DNS' },
-    [pscustomobject]@{ Ip = '223.6.6.6';       Name = '阿里 DNS 备用' },
-    [pscustomobject]@{ Ip = '119.29.29.29';    Name = '腾讯 DNSPod' },
-    [pscustomobject]@{ Ip = '182.254.116.116'; Name = '腾讯 DNSPod 备用' },
-    [pscustomobject]@{ Ip = '180.76.76.76';    Name = '百度 DNS' },
-    [pscustomobject]@{ Ip = '114.114.114.114'; Name = '114DNS' },
-    [pscustomobject]@{ Ip = '114.114.115.115'; Name = '114DNS 备用' },
-    [pscustomobject]@{ Ip = '117.50.10.10';    Name = 'OneDNS' },
-    [pscustomobject]@{ Ip = '1.2.4.8';         Name = 'CNNIC sDNS' },
-    [pscustomobject]@{ Ip = '210.2.4.8';       Name = 'CNNIC sDNS 备用' }
-)
+function Get-DnsListDefaults {
+    return @(
+        [pscustomobject]@{ Ip = '223.5.5.5';       Name = '阿里 DNS' },
+        [pscustomobject]@{ Ip = '223.6.6.6';       Name = '阿里 DNS 备用' },
+        [pscustomobject]@{ Ip = '119.29.29.29';    Name = '腾讯 DNSPod' },
+        [pscustomobject]@{ Ip = '182.254.116.116'; Name = '腾讯 DNSPod 备用' },
+        [pscustomobject]@{ Ip = '180.76.76.76';    Name = '百度 DNS' },
+        [pscustomobject]@{ Ip = '114.114.114.114'; Name = '114DNS' },
+        [pscustomobject]@{ Ip = '114.114.115.115'; Name = '114DNS 备用' },
+        [pscustomobject]@{ Ip = '117.50.10.10';    Name = 'OneDNS' },
+        [pscustomobject]@{ Ip = '1.2.4.8';         Name = 'CNNIC sDNS' },
+        [pscustomobject]@{ Ip = '210.2.4.8';       Name = 'CNNIC sDNS 备用' }
+    )
+}
+
+function Get-DnsListPath {
+    return (Join-Path $script:DataRoot 'config\dns-list.json')
+}
+
+function Read-DnsList {
+    # 用户自定义优先；没有配置文件时用内置默认（10 家）
+    $path = Get-DnsListPath
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $j = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $list = @()
+            foreach ($s in @($j.servers)) {
+                if (-not $s -or [string]::IsNullOrWhiteSpace([string]$s.ip)) { continue }
+                $nm = if ([string]::IsNullOrWhiteSpace([string]$s.name)) { [string]$s.ip } else { [string]$s.name }
+                $list += [pscustomobject]@{ Ip = [string]$s.ip; Name = $nm }
+            }
+            if ($list.Count -gt 0) { return $list }
+        } catch { }
+    }
+    return (Get-DnsListDefaults)
+}
+
+function Save-DnsList($Servers) {
+    $path = Get-DnsListPath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $doc = [ordered]@{ servers = @($Servers | ForEach-Object { [ordered]@{ ip = [string]$_.Ip; name = [string]$_.Name } }) }
+    [IO.File]::WriteAllText($path, ($doc | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+    return $path
+}
 
 $script:samples   = New-Object System.Collections.ArrayList
 $script:lowLatOn  = $false
@@ -723,7 +757,7 @@ function Invoke-DnsOptimize {
     if ($i.Gateway -and $i.Gateway -ne '—') {
         $cands += [pscustomobject]@{ Ip = $i.Gateway; Name = '网关（运营商下发）' }
     }
-    foreach ($d in $script:DnsList) { $cands += $d }
+    foreach ($d in (Read-DnsList)) { $cands += $d }
 
     Write-Log ("开始实测 " + $cands.Count + " 个 DNS（每家 2 次查询，约 5~15 秒）...") 'dim'
     $results = @()
@@ -739,7 +773,7 @@ function Invoke-DnsOptimize {
             $tag = ("{0,4} ms" -f $ms)
             $lvl = if ($ms -le 30) { 'ok' } elseif ($ms -le 80) { 'dim' } else { 'warn' }
         }
-        Write-Log ("     {0,-16} {1,-20} {2}" -f $c.Ip, $c.Name, $tag) $lvl
+        Write-Log ("     {0,-16} {1,-20} {2}" -f $cand.Ip, $cand.Name, $tag) $lvl
     }
 
     $usable = @($results | Where-Object { $_.Ms -lt 9999 } | Sort-Object Ms)
@@ -1999,6 +2033,106 @@ function Show-WifiEditDialog($Entry) {
     return $script:wifiEditResult
 }
 
+function Show-DnsListWindow {
+    $servers = Read-DnsList
+
+    $w = New-Object System.Windows.Forms.Form
+    $w.Icon = $form.Icon
+    $w.Text = 'DNS 候选列表'
+    $w.Size = New-Object System.Drawing.Size(560, 520)
+    $w.StartPosition = 'CenterParent'
+    $w.FormBorderStyle = 'FixedDialog'
+    $w.MaximizeBox = $false
+    $w.MinimizeBox = $false
+    $w.BackColor = $C.Bg
+    $w.ForeColor = $C.Text
+    $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = '每行一个，格式：IP 空格 名称（名称可省略）。「DNS 优选」会逐个实测这些服务器。'
+    $hint.ForeColor = $C.Dim
+    $hint.Location = New-Object System.Drawing.Point(18, 14)
+    $hint.Size = New-Object System.Drawing.Size(520, 20)
+    $w.Controls.Add($hint)
+
+    $txt = New-Object System.Windows.Forms.TextBox
+    $txt.Location = New-Object System.Drawing.Point(18, 40)
+    $txt.Size = New-Object System.Drawing.Size(516, 360)
+    $txt.Multiline = $true
+    $txt.ScrollBars = 'Vertical'
+    $txt.AcceptsReturn = $true
+    $txt.BackColor = $C.Card
+    $txt.ForeColor = $C.Text
+    $txt.BorderStyle = 'FixedSingle'
+    $txt.Font = New-Object System.Drawing.Font('Consolas', 10)
+    $txt.Text = (($servers | ForEach-Object { "$($_.Ip) $($_.Name)" }) -join "`r`n")
+    $w.Controls.Add($txt)
+
+    $btnDefault = New-DialogButton $w '恢复默认' 18 412 110
+    $btnSave    = New-DialogButton $w '保存'    330 412 100
+    $btnSave.BackColor = $C.Accent
+    $btnSave.Tag = $C.Accent
+    $btnCancel  = New-DialogButton $w '取消'    436 412 100
+
+    $btnDefault.Add_Click({
+        $txt.Text = ((Get-DnsListDefaults | ForEach-Object { "$($_.Ip) $($_.Name)" }) -join "`r`n")
+    })
+
+    $btnSave.Add_Click({
+        $parsed = @()
+        $bad = 0
+        foreach ($line in ($txt.Text -split "`r?`n")) {
+            $t = $line.Trim()
+            if ([string]::IsNullOrWhiteSpace($t)) { continue }
+            $parts = $t -split '\s+', 2
+            $ip = $parts[0]
+            $name = if ($parts.Count -gt 1) { $parts[1].Trim() } else { $ip }
+            $ok = ($ip -match '^\d{1,3}(\.\d{1,3}){3}$') -or ($ip -match '^[0-9A-Fa-f:]{3,}$' -and $ip -match ':')
+            if (-not $ok) { $bad++; continue }
+            $parsed += [pscustomobject]@{ Ip = $ip; Name = $name }
+        }
+        if ($parsed.Count -eq 0) {
+            [void][System.Windows.Forms.MessageBox]::Show('至少要有一个有效的 IP 地址。', '提示')
+            return
+        }
+        if ($bad -gt 0) {
+            [void][System.Windows.Forms.MessageBox]::Show("已忽略 $bad 行无法识别的地址。", '提示')
+        }
+        try {
+            [void](Save-DnsList $parsed)
+            Write-Log ("DNS 列表已保存：$($parsed.Count) 个服务器") 'ok'
+            $w.DialogResult = 'OK'
+            $w.Close()
+        } catch {
+            [void][System.Windows.Forms.MessageBox]::Show("保存失败：$($_.Exception.Message)", '错误')
+        }
+    })
+    $btnCancel.Add_Click({ $w.DialogResult = 'Cancel'; $w.Close() })
+
+    if ($script:captureDnsList) {
+        $w.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 500
+        [System.Windows.Forms.Application]::DoEvents()
+        if (-not ('W2.Gdi' -as [type])) {
+            Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);'
+        }
+        $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
+        $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+        $hdc = $gfx.GetHdc()
+        $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
+        $gfx.ReleaseHdc($hdc); $gfx.Dispose()
+        $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bmp.Dispose()
+        $w.Close()
+        Write-Host "已保存: $($script:capturePath) (PrintWindow=$ok)"
+        return
+    }
+
+    [void]$w.ShowDialog()
+    $w.Dispose()
+}
+
 function Show-SettingsWindow {
     $cfgFile = Join-Path $script:DataRoot 'runtime\proxy-settings.json'
     $curExe = ''
@@ -2079,13 +2213,15 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $lWifi.Size = New-Object System.Drawing.Size(600, 20)
     $w.Controls.Add($lWifi)
 
-    $btnWifi = New-DialogButton $w '网络列表…' 18 258 140
+    $btnWifi = New-DialogButton $w '网络列表…' 18 258 125
+    $btnDns = New-DialogButton $w 'DNS 列表…' 150 258 115
+    $btnDns.Add_Click({ Show-DnsListWindow })
     $btnWifi.Add_Click({ Show-WifiListWindow })
 
     $lWifiSummary = New-Object System.Windows.Forms.Label
     $lWifiSummary.ForeColor = $C.Dim
-    $lWifiSummary.Location = New-Object System.Drawing.Point(170, 264)
-    $lWifiSummary.Size = New-Object System.Drawing.Size(460, 20)
+    $lWifiSummary.Location = New-Object System.Drawing.Point(274, 264)
+    $lWifiSummary.Size = New-Object System.Drawing.Size(360, 20)
     $w.Controls.Add($lWifiSummary)
 
     $chk5g = New-Object System.Windows.Forms.CheckBox
@@ -2479,6 +2615,13 @@ if ($WifiList) {
     $script:captureWifiList = $true
     $script:capturePath = $Out
     Show-WifiListWindow
+    return
+}
+
+if ($DnsList) {
+    $script:captureDnsList = $true
+    $script:capturePath = $Out
+    Show-DnsListWindow
     return
 }
 
