@@ -673,6 +673,36 @@ function Update-LatencyLabel {
 }
 
 # ============================ 操作 ============================
+function Show-FirstRunHints {
+    # 配置不全时给一次引导，不阻断任何操作
+    $tips = @()
+
+    $wl = $null
+    try { $wl = Read-WifiList } catch { }
+    $nets = if ($wl) { @($wl.networks) } else { @() }
+    $campus = $null
+    try { if ($wl) { $campus = Get-CampusFromList $wl } } catch { }
+
+    if ($nets.Count -eq 0) {
+        $tips += '还没有网络列表：⚙ 设置 → 网络列表… → 添加…  加入你常用的 WiFi（断网自动重连依赖它）'
+    }
+    if (-not $campus) {
+        $tips += '还没有校园网条目：在网络列表里选中学校 WiFi → 「设为校园网」→ 填认证网址（之后「校园网登录」才可用）'
+    } elseif ([string]::IsNullOrWhiteSpace([string]$campus.portalUrl)) {
+        $tips += '校园网条目缺少认证网址：编辑该条目，填学校认证页地址'
+    }
+
+    $ps = $null
+    try { $ps = Read-ProxySettings } catch { }
+    if (-not $ps -or [string]::IsNullOrWhiteSpace([string]$ps.clientExe)) {
+        $tips += '还没有配置代理客户端：⚙ 设置 → 代理软件主程序（开启代理时用来自动拉起内核）'
+    }
+
+    if ($tips.Count -eq 0) { return }
+    Write-Log '首次使用引导：' 'info'
+    foreach ($t in $tips) { Write-Log ('  · ' + $t) 'dim' }
+}
+
 function Invoke-Check {
     Set-Busy $true
     try {
@@ -2605,6 +2635,7 @@ $form.Add_Shown({
 
     Update-Status | Out-Null
     Write-Log '就绪。建议先点「一键体检」了解现状。' 'dim'
+    try { Show-FirstRunHints } catch { }
     $i = Get-NetInfo
     if ($i.ProxyOn -and $i.ProxyKnown -and -not $i.ProxyPort) { Write-Log '系统代理目标暂时无法连接；可检查代理软件，或主动关闭手动系统代理。' 'warn' }
     # 焦点给日志框，避免按钮上出现白色焦点框
