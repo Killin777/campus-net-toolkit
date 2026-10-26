@@ -1159,19 +1159,19 @@ function Invoke-ReconnectWifi {
 function Get-CampusConfig {
     # 打包版里"数据目录的导入副本"可能是旧快照（缺 ssid 等新字段），
     # 所以不能取第一个就返回，要把所有候选文件合并，越靠后的优先级越高。
+    # 优先级从低到高：程序目录 -> exe 目录 -> 数据目录导入副本 -> 数据目录用户设置
     $paths = New-Object System.Collections.ArrayList
+    if ($script:ProjRoot) { [void]$paths.Add((Join-Path $script:ProjRoot 'config\campus-config.json')) }
+    if ($env:CAMPUS_NET_LAUNCHER) {
+        [void]$paths.Add((Join-Path (Split-Path -Parent $env:CAMPUS_NET_LAUNCHER) 'config\campus-config.json'))
+    }
     $roots = @()
-    if ($env:CAMPUS_NET_DATA_ROOT) { $roots += $env:CAMPUS_NET_DATA_ROOT }
     if ($script:DataRoot) { $roots += $script:DataRoot }
+    if ($env:CAMPUS_NET_DATA_ROOT) { $roots += $env:CAMPUS_NET_DATA_ROOT }
     foreach ($r in ($roots | Select-Object -Unique)) {
         [void]$paths.Add((Join-Path $r 'runtime\imported-campus-config.json'))
         [void]$paths.Add((Join-Path $r 'config\campus-config.json'))
     }
-    if ($env:CAMPUS_NET_LAUNCHER) {
-        [void]$paths.Add((Join-Path (Split-Path -Parent $env:CAMPUS_NET_LAUNCHER) 'config\campus-config.json'))
-    }
-    if ($script:ProjRoot) { [void]$paths.Add((Join-Path $script:ProjRoot 'config\campus-config.json')) }
-
     $merged = [ordered]@{}
     $found = $false
     foreach ($f in $paths) {
@@ -1448,7 +1448,7 @@ function Show-SettingsWindow {
     $w = New-Object System.Windows.Forms.Form
     $w.Icon = $form.Icon
     $w.Text = '代理客户端设置'
-    $w.Size = New-Object System.Drawing.Size(660, 350)
+$w.Size = New-Object System.Drawing.Size(660, 460)
     $w.StartPosition = 'CenterParent'
     $w.FormBorderStyle = 'FixedDialog'
     $w.MaximizeBox = $false
@@ -1513,7 +1513,7 @@ function Show-SettingsWindow {
 
     $txtResult = New-Object System.Windows.Forms.TextBox
     $txtResult.Location = New-Object System.Drawing.Point(18, 122)
-    $txtResult.Size = New-Object System.Drawing.Size(616, 130)
+$txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $txtResult.Multiline = $true
     $txtResult.ReadOnly = $true
     $txtResult.ScrollBars = 'Vertical'
@@ -1524,12 +1524,67 @@ function Show-SettingsWindow {
     $txtResult.Text = '点「测试连接」验证端口是否真的能当代理用。'
     $w.Controls.Add($txtResult)
 
-    $btnSave   = New-DialogButton $w '保存' 432 268 96
+    # ---------- 校园网 ----------
+    $lCampus = New-Object System.Windows.Forms.Label
+    $lCampus.Text = '校园网（「校园网登录」按钮会用到；留空则该功能不可用）'
+    $lCampus.ForeColor = $C.Accent
+    $lCampus.Location = New-Object System.Drawing.Point(18, 226)
+    $lCampus.Size = New-Object System.Drawing.Size(600, 20)
+    $w.Controls.Add($lCampus)
+
+    $lPortal = New-Object System.Windows.Forms.Label
+    $lPortal.Text = '认证页地址'
+    $lPortal.ForeColor = $C.Dim
+    $lPortal.Location = New-Object System.Drawing.Point(18, 254)
+    $lPortal.Size = New-Object System.Drawing.Size(90, 20)
+    $w.Controls.Add($lPortal)
+
+    $txtPortal = New-Object System.Windows.Forms.TextBox
+    $txtPortal.Location = New-Object System.Drawing.Point(112, 250)
+    $txtPortal.Size = New-Object System.Drawing.Size(340, 26)
+    $txtPortal.BackColor = $C.Card
+    $txtPortal.ForeColor = $C.Text
+    $txtPortal.BorderStyle = 'FixedSingle'
+    $w.Controls.Add($txtPortal)
+
+    $lSsid = New-Object System.Windows.Forms.Label
+    $lSsid.Text = '校园 WiFi 名称'
+    $lSsid.ForeColor = $C.Dim
+    $lSsid.Location = New-Object System.Drawing.Point(18, 286)
+    $lSsid.Size = New-Object System.Drawing.Size(90, 20)
+    $w.Controls.Add($lSsid)
+
+    $txtSsid = New-Object System.Windows.Forms.TextBox
+    $txtSsid.Location = New-Object System.Drawing.Point(112, 282)
+    $txtSsid.Size = New-Object System.Drawing.Size(200, 26)
+    $txtSsid.BackColor = $C.Card
+    $txtSsid.ForeColor = $C.Text
+    $txtSsid.BorderStyle = 'FixedSingle'
+    $w.Controls.Add($txtSsid)
+
+    $chkOpen = New-Object System.Windows.Forms.CheckBox
+    $chkOpen.Text = '该 WiFi 是开放网络（无密码，可自动创建连接配置）'
+    $chkOpen.ForeColor = $C.Dim
+    $chkOpen.Location = New-Object System.Drawing.Point(320, 284)
+    $chkOpen.Size = New-Object System.Drawing.Size(320, 22)
+    $chkOpen.FlatStyle = 'Flat'
+    $w.Controls.Add($chkOpen)
+
+    # 预填当前配置
+    $curCampus = $null
+    try { $curCampus = Get-CampusConfig } catch { }
+    if ($curCampus) {
+        $txtPortal.Text = [string]$curCampus.portalUrl
+        $txtSsid.Text = [string]$curCampus.ssid
+        $chkOpen.Checked = [bool]$curCampus.ssidOpen
+    }
+
+    $btnSave   = New-DialogButton $w '保存' 432 380 96
     $btnSave.BackColor = $C.Accent
     $btnSave.Tag = $C.Accent
-    $btnCancel = New-DialogButton $w '取消' 540 268 96
+    $btnCancel = New-DialogButton $w '取消' 540 380 96
 
-    $btnPrivilege = New-DialogButton $w '启动权限…' 18 268 130
+    $btnPrivilege = New-DialogButton $w '启动权限…' 18 380 130
     $btnPrivilege.Add_Click({
         if ($env:CAMPUS_NET_LAUNCHER -and (Test-Path -LiteralPath $env:CAMPUS_NET_LAUNCHER)) {
             Start-Process -FilePath $env:CAMPUS_NET_LAUNCHER -ArgumentList '--startup-settings' | Out-Null
@@ -1616,6 +1671,22 @@ function Show-SettingsWindow {
             $cfgDir = Split-Path -Parent $cfgFile
             if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
             Save-ToolkitJson $ht $cfgFile
+            # 校园网配置写到数据目录（用户可写，版本升级不会丢）
+            $campusFile = Join-Path $script:DataRoot 'config\campus-config.json'
+            $c = [ordered]@{}
+            if (Test-Path $campusFile) {
+                try {
+                    (Get-Content $campusFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties |
+                        ForEach-Object { $c[$_.Name] = $_.Value }
+                } catch { }
+            }
+            $c['portalUrl'] = $txtPortal.Text.Trim()
+            $c['ssid'] = $txtSsid.Text.Trim()
+            $c['ssidOpen'] = [bool]$chkOpen.Checked
+            if (-not $c['internalNets']) { $c['internalNets'] = @() }
+            $campusDir = Split-Path -Parent $campusFile
+            if (-not (Test-Path $campusDir)) { New-Item -ItemType Directory -Path $campusDir -Force | Out-Null }
+            Save-ToolkitJson $c $campusFile
             $tail = if ($exe) { "，客户端 " + [System.IO.Path]::GetFileName($exe) } else { '，未设置客户端' }
             Write-Log ("设置已保存：端口 $p$tail") 'ok'
             Update-Status | Out-Null
