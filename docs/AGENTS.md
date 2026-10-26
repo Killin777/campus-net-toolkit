@@ -61,3 +61,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\网络优化器.ps1 -Scr
 3. 还有什么没验证（诚实列出）
 
 不要写"应该可以""理论上没问题"。
+
+## 发版规则
+
+**版本号只前进，不复用；不要 force 更新已发布的 tag。**
+每次发版：VERSION → CHANGELOG → Build → 测试全绿 → 提交 → 新 tag → push → `gh release create`。
+详见 [SYSTEM-PROMPT.md](SYSTEM-PROMPT.md) 的「发布流程」。
