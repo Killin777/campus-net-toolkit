@@ -2088,6 +2088,22 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $lWifiSummary.Size = New-Object System.Drawing.Size(460, 20)
     $w.Controls.Add($lWifiSummary)
 
+    $chk5g = New-Object System.Windows.Forms.CheckBox
+    $chk5g.Text = '优先使用 5GHz（关闭后由 Windows 按信号强度选频段）'
+    $chk5g.ForeColor = $C.Text
+    $chk5g.Location = New-Object System.Drawing.Point(18, 300)
+    $chk5g.Size = New-Object System.Drawing.Size(520, 24)
+    $chk5g.FlatStyle = 'Flat'
+    try { $chk5g.Checked = ((Get-BandPreference) -eq 2) } catch { $chk5g.Enabled = $false }
+    $w.Controls.Add($chk5g)
+
+    $l5gHint = New-Object System.Windows.Forms.Label
+    $l5gHint.Text = '5GHz 更快但穿透差；2.4GHz 信号强但容易拥塞。改这项会让网卡短暂重连。'
+    $l5gHint.ForeColor = $C.Dim
+    $l5gHint.Location = New-Object System.Drawing.Point(38, 326)
+    $l5gHint.Size = New-Object System.Drawing.Size(580, 20)
+    $w.Controls.Add($l5gHint)
+
     try {
         $wl = Read-WifiList
         $cnt = @($wl.networks).Count
@@ -2186,6 +2202,19 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
             $cfgDir = Split-Path -Parent $cfgFile
             if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
             Save-ToolkitJson $ht $cfgFile
+            # 频段偏好：改了才写，且先确认（网卡会短暂重连）
+            try {
+                $curBand = Get-BandPreference
+                $wantBand = if ($chk5g.Checked) { 2 } else { 0 }
+                if ($null -ne $curBand -and $curBand -ne $wantBand) {
+                    $ans = [System.Windows.Forms.MessageBox]::Show(
+                        '修改频段偏好会让无线网卡短暂断开重连，继续吗？', '频段偏好', 'YesNo', 'Question')
+                    if ($ans -eq 'Yes') {
+                        Set-BandPreference $wantBand
+                        Write-Log ('频段偏好已改为：' + $(if ($wantBand -eq 2) { '优先 5GHz' } else { '按信号强度' })) 'ok'
+                    }
+                }
+            } catch { Write-Log ('频段偏好未改动：' + $_.Exception.Message) 'dim' }
             $tail = if ($exe) { "，客户端 " + [System.IO.Path]::GetFileName($exe) } else { '，未设置客户端' }
             Write-Log ("设置已保存：端口 $p$tail") 'ok'
             Update-Status | Out-Null
