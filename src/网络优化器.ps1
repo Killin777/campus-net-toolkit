@@ -57,6 +57,20 @@ $C = @{
     Err     = [System.Drawing.Color]::FromArgb(0xF8, 0x71, 0x71)
 }
 
+# DNS 优选候选（国内公共 DNS，按运营商自选）
+$script:DnsList = @(
+    [pscustomobject]@{ Ip = '223.5.5.5';       Name = '阿里 DNS' },
+    [pscustomobject]@{ Ip = '223.6.6.6';       Name = '阿里 DNS 备用' },
+    [pscustomobject]@{ Ip = '119.29.29.29';    Name = '腾讯 DNSPod' },
+    [pscustomobject]@{ Ip = '182.254.116.116'; Name = '腾讯 DNSPod 备用' },
+    [pscustomobject]@{ Ip = '180.76.76.76';    Name = '百度 DNS' },
+    [pscustomobject]@{ Ip = '114.114.114.114'; Name = '114DNS' },
+    [pscustomobject]@{ Ip = '114.114.115.115'; Name = '114DNS 备用' },
+    [pscustomobject]@{ Ip = '117.50.10.10';    Name = 'OneDNS' },
+    [pscustomobject]@{ Ip = '1.2.4.8';         Name = 'CNNIC sDNS' },
+    [pscustomobject]@{ Ip = '210.2.4.8';       Name = 'CNNIC sDNS 备用' }
+)
+
 $script:samples   = New-Object System.Collections.ArrayList
 $script:lowLatOn  = $false
 $script:savedSvc  = @{}
@@ -161,18 +175,23 @@ function Measure-Latency {
 }
 
 function Measure-DnsLatency {
-    param([string]$Server, [string[]]$Domains = @('www.baidu.com', 'www.qq.com', 'www.zhihu.com'))
+    param([string]$Server, [string[]]$Domains, [switch]$Fast)
+    # 地址必须是 IP 或域名；空值/占位符会让 Resolve-DnsName 抛"不知道这样的主机"，直接判为不可用
     if ([string]::IsNullOrWhiteSpace($Server) -or $Server -notmatch '^[0-9A-Za-z\.\:\-]+$') { return 9999 }
-    $times = @()
-    foreach ($domain in $Domains) {
-        $watch = [Diagnostics.Stopwatch]::StartNew()
-        try {
-            $answers = @(Resolve-DnsName $domain -Server $Server -Type A -DnsOnly -QuickTimeout -ErrorAction Stop | Where-Object { $_.IPAddress })
-            $watch.Stop()
-            if ($answers.Count -gt 0) { $times += $watch.Elapsed.TotalMilliseconds }
-        } catch { $watch.Stop() }
+    if (-not $Domains -or $Domains.Count -eq 0) {
+        $Domains = if ($Fast) { @('www.baidu.com', 'www.qq.com') } else { @('www.baidu.com', 'www.qq.com', 'www.zhihu.com') }
     }
-    if ($times.Count -ne $Domains.Count -or $times.Count -eq 0) { return 9999 }
+    $times = @()
+    foreach ($d in $Domains) {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            if ($Fast) { $null = Resolve-DnsName $d -Server $Server -Type A -DnsOnly -QuickTimeout -ErrorAction Stop }
+            else { $null = Resolve-DnsName $d -Server $Server -Type A -DnsOnly -ErrorAction Stop }
+        } catch { }
+        $sw.Stop()
+        if ($sw.Elapsed.TotalMilliseconds -lt 3000) { $times += $sw.Elapsed.TotalMilliseconds }
+    }
+    if ($times.Count -eq 0) { return 9999 }
     return [Math]::Round(($times | Measure-Object -Average).Average, 0)
 }
 
@@ -690,24 +709,34 @@ function Invoke-DnsOptimize {
         return
     }
     $i = Get-NetInfo
+    # 候选：网关（若提供 DNS）+ 国内公共 DNS 名单
     $cands = @()
-    if ($i.Gateway -and $i.Gateway -ne '—') { $cands += $i.Gateway }
-    $cands += '223.5.5.5', '119.29.29.29', '180.76.76.76'
+    if ($i.Gateway -and $i.Gateway -ne '—') {
+        $cands += [pscustomobject]@{ Ip = $i.Gateway; Name = '网关（运营商下发）' }
+    }
+    foreach ($d in $script:DnsList) { $cands += $d }
 
-    Write-Log '开始实测各家 DNS 响应 ...' 'dim'
+    Write-Log ("开始实测 " + $cands.Count + " 个 DNS（每家 2 次查询，约 5~15 秒）...") 'dim'
     $results = @()
-    foreach ($s in ($cands | Select-Object -Unique)) {
-        $ms = Measure-DnsLatency -Server $s
-        $results += [pscustomobject]@{ Server = $s; Ms = $ms }
-        $isGw = ($s -eq $i.Gateway)
+    foreach ($c in $cands) {
+        $ms = Measure-DnsLatency -Server $c.Ip -Fast
+        $results += [pscustomobject]@{ Server = $c.Ip; Name = $c.Name; Ms = $ms }
+        # 边测边出结果，避免十几秒没有反馈
+        $isGw = ($c.Ip -eq $i.Gateway)
         if ($ms -ge 9999) {
-            $tag = if ($isGw) { '网关不提供 DNS（正常）' } else { '超时' }
+            $tag = if ($isGw) { '网关不提供 DNS（正常）' } else { '超时 / 不可用' }
             $lvl = if ($isGw) { 'dim' } else { 'err' }
         } else {
-            $tag = "$ms ms"
-            $lvl = if ($ms -le 30) { 'ok' } else { 'dim' }
+            $tag = ("{0,4} ms" -f $ms)
+            $lvl = if ($ms -le 30) { 'ok' } elseif ($ms -le 80) { 'dim' } else { 'warn' }
         }
-        Write-Log ("  {0,-16} {1}" -f $s, $tag) $lvl
+        Write-Log ("     {0,-16} {1,-20} {2}" -f $c.Ip, $c.Name, $tag) $lvl
+    }
+
+    $usable = @($results | Where-Object { $_.Ms -lt 9999 } | Sort-Object Ms)
+    if ($usable.Count -gt 0) {
+        $top = @($usable | Select-Object -First 3)
+        Write-Log ("最快：" + (($top | ForEach-Object { "$($_.Name) $($_.Server)（$($_.Ms)ms）" }) -join ' > ')) 'ok'
     }
     $best = $results | Where-Object { $_.Ms -lt 9999 } | Sort-Object Ms | Select-Object -First 1
     if (-not $best) { Write-Log '所有 DNS 都不可用，保持原样' 'err'; return }
