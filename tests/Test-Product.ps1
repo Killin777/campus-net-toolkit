@@ -107,6 +107,40 @@ Test-Case 'JSON 状态原子更新可覆盖并保留正确内容' {
     Save-ToolkitJson @{value=2} $file
     Assert-True ((Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json).value -eq 2) '原子更新没有写入第二次值'
 }
+Test-Case '单个接口读不到跃点不会中断整轮备份' {
+    $module = Join-Path $root 'src\lib\NetworkState.ps1'
+    . $module
+    $script:backupAdapters = @(
+        [pscustomobject]@{ Name='WLAN'; Status='Up'; InterfaceGuid='{11111111-1111-1111-1111-111111111111}' },
+        [pscustomobject]@{ Name='vEthernet (Test)'; Status='Up'; InterfaceGuid='{22222222-2222-2222-2222-222222222222}' }
+    )
+    function Get-NetAdapter {
+        param($Name)
+        if ($Name) { return @($script:backupAdapters | Where-Object Name -eq $Name) }
+        return $script:backupAdapters
+    }
+    function Get-ItemProperty {
+        param($LiteralPath)
+        if ($LiteralPath -like '*DeliveryOptimization*') { return $null }
+        return [pscustomobject]@{ NameServer='192.0.2.53' }
+    }
+    function Get-DnsClientServerAddress {
+        param($InterfaceAlias,$AddressFamily)
+        if ($InterfaceAlias -eq 'vEthernet (Test)') { throw '没有 DNS 记录' }
+        return [pscustomobject]@{ ServerAddresses=@('192.0.2.53') }
+    }
+    function Get-NetIPInterface {
+        param($InterfaceAlias,$AddressFamily)
+        if ($InterfaceAlias -eq 'vEthernet (Test)') { throw 'CIM 查询找不到任何匹配的 MSFT_NetIPInterface 对象' }
+        return [pscustomobject]@{ InterfaceMetric=25; AutomaticMetric='Enabled' }
+    }
+    $path = New-NetBackup
+    Assert-True (Test-Path -LiteralPath $path) '备份文件没有生成'
+    $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-True ($saved.跃点.WLAN -eq 25) '可读接口的跃点没有写入备份'
+    Assert-True (@($saved.无法读取跃点) -contains 'vEthernet (Test)') '读不到跃点的接口没有被记录'
+    Assert-True (-not $saved.跃点.PSObject.Properties['vEthernet (Test)']) '读不到跃点的接口被写进了跃点表'
+}
 Write-Host ("产品回归：{0} 项，{1} 个失败" -f $script:total, $script:fail)
 if ($script:fail) { exit 1 }
 exit 0

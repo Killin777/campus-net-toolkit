@@ -102,14 +102,24 @@ function Restore-ProxySnapshot($Snapshot) {
 function New-NetBackup {
     $dir = Join-Path $script:DataRoot 'runtime'
     $path = Join-Path $dir ('network-backup-' + (Get-Date).ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6) + '.json')
-    $snap = [ordered]@{ SchemaVersion=2; 时间=(Get-Date).ToString('s'); DNS=@{}; 跃点=@{}; 自动跃点=@{}; 传递优化=$null; 传递优化原存在=$false }
+    $snap = [ordered]@{ SchemaVersion=2; 时间=(Get-Date).ToString('s'); DNS=@{}; 跃点=@{}; 自动跃点=@{}; 传递优化=$null; 传递优化原存在=$false; 无法读取跃点=@() }
     $do = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config' -ErrorAction SilentlyContinue
     if ($do -and $do.PSObject.Properties['DODownloadMode']) { $snap.传递优化原存在=$true; $snap.传递优化=$do.DODownloadMode }
+    $unreadable = @()
     foreach ($adapter in @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' -or $_.Name -match '^(Radmin VPN|Tailscale)$' })) {
         $snap.DNS[$adapter.Name] = Get-DnsSnapshot $adapter.Name
-        $metric = Get-NetIPInterface -InterfaceAlias $adapter.Name -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1
-        if ($metric) { $snap.跃点[$adapter.Name]=$metric.InterfaceMetric; $snap.自动跃点[$adapter.Name]=[string]$metric.AutomaticMetric }
+        # 个别虚拟网卡（如 Hyper-V 防火墙 vNIC）没有 MSFT_NetIPInterface 实例，
+        # 读不到跃点不等于备份失败：记进「无法读取跃点」，其余网卡照常备份。
+        $metric = $null
+        try { $metric = Get-NetIPInterface -InterfaceAlias $adapter.Name -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1 } catch { }
+        if ($metric) {
+            $snap.跃点[$adapter.Name]=$metric.InterfaceMetric
+            $snap.自动跃点[$adapter.Name]=[string]$metric.AutomaticMetric
+        } else {
+            $unreadable += [string]$adapter.Name
+        }
     }
+    $snap.无法读取跃点 = @($unreadable)
     Save-ToolkitJson $snap $path
     return $path
 }
