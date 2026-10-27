@@ -397,7 +397,7 @@ $pages.BackColor = $C.Bg
     $shell.Controls.Add($pages,1,0)
 
     $script:navItems = @()
-    $script:navNames = @('当前网络','检测详情','各项修复','更多工具')
+    $script:navNames = @('当前网络','检测详情','逐项处理','更多工具')
     for ($ni = 0; $ni -lt 4; $ni++) {
         $b = New-Object System.Windows.Forms.Button
         $b.Text = $script:navNames[$ni]
@@ -878,7 +878,7 @@ $tip.SetToolTip($bSystemProxy,'验证端口、协议、转发与出口后再设�
 $tip.SetToolTip($bRescue,'一键急救在菜单里：清理死代理 / 刷 DNS / 续租；重连 Wi-Fi 与恢复自动 DNS 单独执行。')
 $tip.SetToolTip($bDns,'手动测试 DNS 后，确认才应用；应用前保存原值。')
 $foot = New-Object Windows.Forms.LinkLabel
-$foot.Text = '使用说明 · DNS、接口优先级与无线频段原值见网络备份；逐项修复可单独撤销。'
+$foot.Text = '使用说明 · DNS、接口优先级与无线频段原值见网络备份；逐项处理可单独撤销。'
 $foot.Dock = 'Fill'
 $foot.LinkColor = $C.Dim
 $foot.ActiveLinkColor = $C.Text
@@ -1724,7 +1724,7 @@ function Open-CampusLogin {
         return
     }
     if ($snapshot.Info.ProxyOn) {
-        Write-Log '手动系统代理处于开启状态。如认证页无法访问，可在「逐项修复」中查看并选择关闭；此处只打开浏览器。' 'warn'
+        Write-Log '手动系统代理处于开启状态。如认证页无法访问，可在「逐项处理」中查看并选择关闭；此处只打开浏览器。' 'warn'
     }
     try {
         Start-Process $portalUri.AbsoluteUri
@@ -2854,7 +2854,7 @@ function Show-SettingsWindow {
 
     $w = New-Object System.Windows.Forms.Form
     $w.Icon = $form.Icon
-    $w.Text = '代理客户端设置'
+    $w.Text = '设置'
 $w.Size = New-Object System.Drawing.Size(660, 460)
     $w.StartPosition = 'CenterParent'
     $w.FormBorderStyle = 'FixedDialog'
