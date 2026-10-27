@@ -19,10 +19,14 @@ param(
     [switch]$SelfTest,
     [switch]$Screenshot,
     [switch]$Timeline,
+    [switch]$Details,
+    [switch]$Repairs,
+    [ValidateSet('','Online','NeedsAuth','ProxyIssue','Offline','ExternalFailure','Unknown')]
+    [string]$PreviewScenario = '',
     [switch]$Settings,
     [switch]$Help,
-[switch]$DnsList,
-[switch]$WifiList,
+    [switch]$DnsList,
+    [switch]$WifiList,
     [switch]$AutoClose,
     [string]$DataDirectory = '',
     [string]$Out = "$env:TEMP\netopt.png"
@@ -42,6 +46,12 @@ if ($DataDirectory) { $script:DataRoot = $DataDirectory }
 
 # 共享工具函数（文本宽度、输出、Ping、维护窗口）
 . (Join-Path $PSScriptRoot 'lib\Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\NetworkMonitor.ps1')
+. (Join-Path $PSScriptRoot 'lib\LinkHistory.ps1')
+. (Join-Path $PSScriptRoot 'lib\RouteRepair.ps1')
+. (Join-Path $PSScriptRoot 'lib\WiredCheck.ps1')
+$ErrorActionPreference = 'Stop'
+if ($PreviewScenario -and -not ($Screenshot -or $Details -or $Repairs)) { throw 'PreviewScenario 仅用于截图预览。' }
 
 # ============================ 提权 ============================
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -56,12 +66,25 @@ $C = @{
     Card2   = [System.Drawing.Color]::FromArgb(0x2A, 0x2E, 0x36)
     Btn     = [System.Drawing.Color]::FromArgb(0x2E, 0x33, 0x3C)
     BtnHover= [System.Drawing.Color]::FromArgb(0x3B, 0x42, 0x4E)
-    Accent  = [System.Drawing.Color]::FromArgb(0x4F, 0x8C, 0xFF)
+    Accent  = [System.Drawing.Color]::FromArgb(0x25, 0x63, 0xEB)
     Text    = [System.Drawing.Color]::FromArgb(0xE6, 0xE8, 0xEB)
     Dim     = [System.Drawing.Color]::FromArgb(0x9A, 0xA1, 0xAE)
     Ok      = [System.Drawing.Color]::FromArgb(0x4A, 0xDE, 0x80)
     Warn    = [System.Drawing.Color]::FromArgb(0xFB, 0xBF, 0x24)
     Err     = [System.Drawing.Color]::FromArgb(0xF8, 0x71, 0x71)
+}
+
+$script:useDarkTheme = $true
+try {
+    $themeSettings = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -ErrorAction Stop
+    $script:useDarkTheme = $themeSettings.AppsUseLightTheme -eq 0
+} catch { $script:useDarkTheme = $true }
+if (-not $script:useDarkTheme) {
+    $C.Bg=[Drawing.ColorTranslator]::FromHtml('#F4F6F8'); $C.Card=[Drawing.Color]::White
+    $C.Card2=[Drawing.ColorTranslator]::FromHtml('#E8EDF3'); $C.Btn=$C.Card
+    $C.BtnHover=[Drawing.ColorTranslator]::FromHtml('#E8EDF3'); $C.Text=[Drawing.ColorTranslator]::FromHtml('#182230')
+    $C.Dim=[Drawing.ColorTranslator]::FromHtml('#4B5563'); $C.Ok=[Drawing.ColorTranslator]::FromHtml('#166534')
+    $C.Warn=[Drawing.ColorTranslator]::FromHtml('#92400E'); $C.Err=[Drawing.ColorTranslator]::FromHtml('#B91C1C')
 }
 
 # DNS 优选候选（国内公共 DNS，按运营商自选）
@@ -263,277 +286,322 @@ if ($SelfTest) {
 }
 
 # ============================ UI ============================
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object Windows.Forms.Form
 $appIconPath = Join-Path $script:ProjRoot 'assets\lingzhi.ico'
-if (Test-Path -LiteralPath $appIconPath) {
-    $form.Icon = New-Object System.Drawing.Icon($appIconPath, 32, 32)
-}
+if (Test-Path -LiteralPath $appIconPath) { $form.Icon = New-Object Drawing.Icon($appIconPath,32,32) }
 $script:AppVersion = [IO.File]::ReadAllText((Join-Path $script:ProjRoot 'VERSION')).Trim()
-$form.Text = '网络优化器 v' + $script:AppVersion
-$form.Size = New-Object System.Drawing.Size(980, 818)
+$form.Text = '校园网工具箱 v' + $script:AppVersion
 $form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'Sizable'
-$form.MaximizeBox = $true
-$form.AutoScroll = $true
-$form.AutoScrollMinSize = New-Object Drawing.Size(958,770)
-$form.MinimumSize = New-Object Drawing.Size(680,480)
+$form.MinimumSize = New-Object Drawing.Size(760,580)
+$form.AutoScaleMode = 'Dpi'
 $screenArea = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$form.Size = New-Object Drawing.Size([Math]::Min(980,$screenArea.Width),[Math]::Min(818,$screenArea.Height))
+$form.Size = New-Object Drawing.Size([Math]::Min(1000,$screenArea.Width),[Math]::Min(760,$screenArea.Height))
 $form.BackColor = $C.Bg
 $form.ForeColor = $C.Text
-$form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+$form.Font = New-Object Drawing.Font([Drawing.SystemFonts]::MessageBoxFont.FontFamily,10)
 
-# --- 顶部标题 ---
-$title = New-Object System.Windows.Forms.Label
-$title.Text = '网络优化器'
-$title.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 17, [System.Drawing.FontStyle]::Bold)
-$title.ForeColor = $C.Text
-$title.Location = New-Object System.Drawing.Point(22, 14)
-$title.Size = New-Object System.Drawing.Size(300, 34)
-$form.Controls.Add($title)
+function New-AppButton {
+    param($Parent,[string]$Text,[bool]$Primary=$false,[int]$Width=160)
+    $button = New-Object Windows.Forms.Button
+    $button.Text = $Text
+    $button.Size = New-Object Drawing.Size($Width,42)
+    $button.Margin = New-Object Windows.Forms.Padding(0,0,12,10)
+    $button.FlatStyle = 'Flat'
+    $button.FlatAppearance.BorderSize = 1
+    $button.FlatAppearance.BorderColor = $C.Dim
+    $button.BackColor = if ($Primary) { $C.Accent } else { $C.Btn }
+    $button.ForeColor = if ($Primary) { [Drawing.Color]::White } else { $C.Text }
+    $button.Cursor = 'Hand'
+    $Parent.Controls.Add($button)
+    return $button
+}
 
-$sub = New-Object System.Windows.Forms.Label
-$sub.Text = '实测驱动的本地网络体检与调优 · 不是游戏加速器'
-$sub.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+function New-TextLabel {
+    param($Parent,[string]$Text,[int]$Size=10,[bool]$Bold=$false)
+    $label = New-Object Windows.Forms.Label
+    $label.AutoSize = $true
+    $label.Text = $Text
+    $label.ForeColor = $C.Text
+    $label.Font = New-Object Drawing.Font($form.Font.FontFamily,$Size,$(if ($Bold) { [Drawing.FontStyle]::Bold } else { [Drawing.FontStyle]::Regular }))
+    $label.Margin = New-Object Windows.Forms.Padding(0,0,0,10)
+    $Parent.Controls.Add($label)
+    return $label
+}
+
+$rootLayout = New-Object Windows.Forms.TableLayoutPanel
+$rootLayout.Dock = 'Fill'
+$rootLayout.Padding = New-Object Windows.Forms.Padding(20,16,20,10)
+$rootLayout.ColumnCount = 1
+$rootLayout.RowCount = 3
+[void]$rootLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',76)))
+[void]$rootLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+[void]$rootLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',36)))
+$form.Controls.Add($rootLayout)
+$header = New-Object Windows.Forms.TableLayoutPanel
+$header.Dock = 'Fill'
+$header.ColumnCount = 3
+[void]$header.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+[void]$header.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',140)))
+[void]$header.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',115)))
+$rootLayout.Controls.Add($header,0,0)
+$heading = New-Object Windows.Forms.FlowLayoutPanel
+$heading.Dock = 'Fill'
+$heading.FlowDirection = 'TopDown'
+$heading.WrapContents = $false
+$header.Controls.Add($heading,0,0)
+$title = New-TextLabel $heading '校园网工具箱' 20 $true
+$title.Margin = New-Object Windows.Forms.Padding(0,0,0,3)
+$sub = New-TextLabel $heading '检测连接、认证和代理，按证据处理问题' 10
 $sub.ForeColor = $C.Dim
-$sub.Location = New-Object System.Drawing.Point(24, 48)
-$sub.Size = New-Object System.Drawing.Size(460, 20)
-$form.Controls.Add($sub)
+$badge = New-Object Windows.Forms.LinkLabel
+$badge.Text = if ($isAdmin) { '管理员权限' } else { '普通权限 · 提权' }
+$badge.Dock = 'Fill'
+$badge.TextAlign = 'MiddleCenter'
+$badge.LinkColor = $C.Text
+$badge.ActiveLinkColor = $C.Accent
+$badge.VisitedLinkColor = $C.Text
+$header.Controls.Add($badge,1,0)
+$bSettings = New-AppButton $header '设置' $false 105
+$bSettings.Anchor = 'Right'
+$header.SetCellPosition($bSettings,(New-Object Windows.Forms.TableLayoutPanelCellPosition(2,0)))
 
-$badge = New-Object System.Windows.Forms.Label
-$badge.Text = if ($isAdmin) { '● 管理员' } else { '● 普通权限' }
-$badge.ForeColor = if ($isAdmin) { $C.Ok } else { $C.Warn }
-$badge.TextAlign = 'MiddleRight'
-$badge.Location = New-Object System.Drawing.Point(820, 20)
-$badge.Size = New-Object System.Drawing.Size(120, 22)
-$form.Controls.Add($badge)
-# --- 模式条 ---
-$modePanel = New-Object System.Windows.Forms.Panel
-$modePanel.Location = New-Object System.Drawing.Point(22, 78)
-$modePanel.Size = New-Object System.Drawing.Size(936, 52)
-$modePanel.BackColor = $C.Bg
-$form.Controls.Add($modePanel)
-
-function New-ModeButton($text, $x, $accent, $width = 182) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $text
-    $b.Size = New-Object System.Drawing.Size($width, 44)
-    $b.Location = New-Object System.Drawing.Point($x, 4)
-    $b.FlatStyle = 'Flat'
-    $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = if ($accent) { $C.Accent } else { $C.Card2 }
-    $b.ForeColor = [System.Drawing.Color]::White
-    $b.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
-    $b.Cursor = 'Hand'
-    $b.Tag = $b.BackColor
-    $b.Add_MouseEnter({ $this.BackColor = $C.BtnHover })
-    $b.Add_MouseLeave({ $this.BackColor = $this.Tag })
-    $modePanel.Controls.Add($b)
-    return $b
+$pages = New-Object Windows.Forms.TabControl
+$pages.Dock = 'Fill'
+$pages.Padding = New-Object Drawing.Point(16,9)
+$rootLayout.Controls.Add($pages,0,1)
+$homePage = New-Object Windows.Forms.TabPage('当前网络')
+$detailsPage = New-Object Windows.Forms.TabPage('检测详情')
+$repairsPage = New-Object Windows.Forms.TabPage('逐项修复')
+$toolsPage = New-Object Windows.Forms.TabPage('更多工具')
+foreach ($page in @($homePage,$detailsPage,$repairsPage,$toolsPage)) {
+    $page.BackColor = $C.Bg
+    $page.ForeColor = $C.Text
+    $page.Padding = New-Object Windows.Forms.Padding(18)
+    $pages.TabPages.Add($page)
 }
-
-$script:proxyStateLabel = New-Object System.Windows.Forms.Label
-$script:proxyStateLabel.Text = '检测中 ...'
-$script:proxyStateLabel.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 13, [System.Drawing.FontStyle]::Bold)
-$script:proxyStateLabel.ForeColor = $C.Dim
-$script:proxyStateLabel.Location = New-Object System.Drawing.Point(4, 1)
-$script:proxyStateLabel.Size = New-Object System.Drawing.Size(250, 28)
-$modePanel.Controls.Add($script:proxyStateLabel)
-
-$script:proxyStateDetail = New-Object System.Windows.Forms.Label
-$script:proxyStateDetail.Text = ''
-$script:proxyStateDetail.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
+$homePage.AutoScroll = $true
+$homePanel = New-Object Windows.Forms.TableLayoutPanel
+$homePanel.Dock = 'Top'
+$homePanel.AutoSize = $true
+$homePanel.ColumnCount = 1
+$homePanel.GrowStyle = 'AddRows'
+$homePage.Controls.Add($homePanel)
+$lbConclusion = New-TextLabel $homePanel '正在检测当前网络…' 23 $true
+$lbConclusion.Margin = New-Object Windows.Forms.Padding(0,12,0,14)
+$lbConclusionDetail = New-TextLabel $homePanel '正在后台读取连接与代理证据，界面可继续使用。' 11
+$lbConclusionDetail.Margin = New-Object Windows.Forms.Padding(0,0,0,16)
+$lbCheckedAt = New-TextLabel $homePanel '检测证据：尚未取得' 10
+$lbCheckedAt.ForeColor = $C.Dim
+$primaryActions = New-Object Windows.Forms.FlowLayoutPanel
+$primaryActions.AutoSize = $true
+$primaryActions.Dock = 'Fill'
+$primaryActions.Margin = New-Object Windows.Forms.Padding(0,5,0,16)
+$homePanel.Controls.Add($primaryActions)
+$bPrimary = New-AppButton $primaryActions '重新检测' $true 190
+$bRefresh = New-AppButton $primaryActions '刷新状态' $false 145
+$bDetails = New-AppButton $primaryActions '查看检测详情' $false 165
+$evidenceBox = New-Object Windows.Forms.FlowLayoutPanel
+$evidenceBox.FlowDirection = 'TopDown'
+$evidenceBox.WrapContents = $false
+$evidenceBox.Dock = 'Fill'
+$evidenceBox.AutoSize = $true
+$evidenceBox.BackColor = $C.Card
+$evidenceBox.Padding = New-Object Windows.Forms.Padding(16)
+$evidenceBox.Margin = New-Object Windows.Forms.Padding(0,0,0,14)
+$homePanel.Controls.Add($evidenceBox)
+$lbConnectionEvidence = New-TextLabel $evidenceBox '连接与认证：等待证据' 11 $true
+$lbNetworkEvidence = New-TextLabel $evidenceBox '外网质量：等待检测' 10
+$script:proxyStateLabel = New-TextLabel $evidenceBox '系统代理：等待证据' 11 $true
+$script:proxyStateDetail = New-TextLabel $evidenceBox '手动代理与外网可用性分别验证。' 10
 $script:proxyStateDetail.ForeColor = $C.Dim
-$script:proxyStateDetail.Location = New-Object System.Drawing.Point(6, 30)
-$script:proxyStateDetail.Size = New-Object System.Drawing.Size(360, 18)
-$modePanel.Controls.Add($script:proxyStateDetail)
+$lbHomeHistory = New-TextLabel $homePanel '断链历史：尚未读取' 10
+$historyActions = New-Object Windows.Forms.FlowLayoutPanel
+$historyActions.AutoSize = $true
+$historyActions.Dock = 'Fill'
+$homePanel.Controls.Add($historyActions)
+$bTimeline = New-AppButton $historyActions '查看断链时间线' $false 190
+$bWiredHome = New-AppButton $historyActions '检查有线连接' $false 180
 
-$bProxyOn  = New-ModeButton '开启代理' 380  $true  180
-$bProxyOff = New-ModeButton '国内直连' 570  $false 180
-$bSettings = New-ModeButton '⚙ 设置'   760  $false 170
-
-# --- 状态卡片 ---
-$card = New-Object System.Windows.Forms.Panel
-$card.Location = New-Object System.Drawing.Point(22, 142)
-$card.Size = New-Object System.Drawing.Size(444, 302)
+$detailLayout = New-Object Windows.Forms.TableLayoutPanel
+$detailLayout.Dock = 'Fill'
+$detailLayout.ColumnCount = 1
+$detailLayout.RowCount = 3
+[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',270)))
+[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',105)))
+[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+$detailsPage.Controls.Add($detailLayout)
+$card = New-Object Windows.Forms.TableLayoutPanel
+$card.Dock = 'Fill'
 $card.BackColor = $C.Card
-$form.Controls.Add($card)
-
-$cardTitle = New-Object System.Windows.Forms.Label
-$cardTitle.Text = '当前网络'
-$cardTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
-$cardTitle.ForeColor = $C.Accent
-$cardTitle.Location = New-Object System.Drawing.Point(16, 12)
-$cardTitle.Size = New-Object System.Drawing.Size(200, 22)
-$card.Controls.Add($cardTitle)
-
+$card.Padding = New-Object Windows.Forms.Padding(12)
+$card.ColumnCount = 2
+[void]$card.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',88)))
+[void]$card.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+$detailLayout.Controls.Add($card,0,0)
 function New-InfoRow {
-    param($parent, $y, $key)
-    $k = New-Object System.Windows.Forms.Label
-    $k.Text = $key
-    $k.ForeColor = $C.Dim
-    $k.Location = New-Object System.Drawing.Point(16, $y)
-    $k.Size = New-Object System.Drawing.Size(74, 20)
-    $parent.Controls.Add($k)
-    $v = New-Object System.Windows.Forms.Label
-    $v.Text = '—'
-    $v.ForeColor = $C.Text
-    $v.Location = New-Object System.Drawing.Point(94, $y)
-    $v.Size = New-Object System.Drawing.Size(336, 20)
-    $parent.Controls.Add($v)
-    return $v
+    param($Parent,[string]$Key)
+    $row = $Parent.RowCount
+    $Parent.RowCount++
+    [void]$Parent.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',11.11)))
+    $keyLabel = New-TextLabel $Parent $Key 10
+    $keyLabel.ForeColor = $C.Dim
+    $keyLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $Parent.SetCellPosition($keyLabel,(New-Object Windows.Forms.TableLayoutPanelCellPosition(0,$row)))
+    $valueLabel = New-TextLabel $Parent '—' 10
+    $valueLabel.Dock = 'Fill'
+    $valueLabel.AutoSize = $false
+    $valueLabel.AutoEllipsis = $true
+    $valueLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $Parent.SetCellPosition($valueLabel,(New-Object Windows.Forms.TableLayoutPanelCellPosition(1,$row)))
+    return $valueLabel
 }
+$card.RowCount = 0
+$lbSSID = New-InfoRow $card '连接'
+$lbIP = New-InfoRow $card 'IPv4 出口'
+$lbGW = New-InfoRow $card '网关'
+$lbDNS = New-InfoRow $card 'DNS'
+$lbLoss = New-InfoRow $card '采样延迟'
+$lbSignal = New-InfoRow $card '链路速率'
+$lbDrop = New-InfoRow $card '断链历史'
+$lbProxy = New-InfoRow $card '系统代理'
+$lbMode = New-InfoRow $card '质量证据'
 
-$lbSSID  = New-InfoRow $card 44 '无线'
-$lbIP    = New-InfoRow $card 70 '地址'
-$lbGW    = New-InfoRow $card 96 '网关'
-$lbDNS   = New-InfoRow $card 122 'DNS'
-$lbLoss  = New-InfoRow $card 148 '延迟'
-$lbSignal= New-InfoRow $card 174 '信号'
-$lbSignal.Cursor = 'Hand'
-$lbSignal.Add_Click({ try { Invoke-ReconnectWifi } catch { Write-Log ('重新关联失败：' + $_.Exception.Message) 'err' } })
-$lbDrop  = New-InfoRow $card 200 '断链'
-$lbProxy = New-InfoRow $card 226 '代理'
-$lbMode  = New-InfoRow $card 252 '模式'
-
-# --- 按钮区 ---
-$btnPanel = New-Object System.Windows.Forms.Panel
-$btnPanel.Location = New-Object System.Drawing.Point(478, 142)
-$btnPanel.Size = New-Object System.Drawing.Size(464, 302)
-$btnPanel.BackColor = $C.Bg
-$form.Controls.Add($btnPanel)
-
-function New-ActionButton {
-    param($text, $x, $y, $w, $h, $accent = $false)
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $text
-    $b.Size = New-Object System.Drawing.Size($w, $h)
-    $b.Location = New-Object System.Drawing.Point($x, $y)
-    $b.FlatStyle = 'Flat'
-    $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = if ($accent) { $C.Accent } else { $C.Btn }
-    $b.ForeColor = [System.Drawing.Color]::White
-    $b.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
-    $b.Cursor = 'Hand'
-    $b.Tag = $b.BackColor
-    $b.Add_MouseEnter({ $this.BackColor = $C.BtnHover })
-    $b.Add_MouseLeave({ $this.BackColor = $this.Tag })
-    $btnPanel.Controls.Add($b)
-    return $b
-}
-
-$bCheck   = New-ActionButton '一键体检'      0   0   220 50 $true
-$bOpt     = New-ActionButton '校园网体检'      232 0   220 50
-$bDns     = New-ActionButton 'DNS 优选'      0   60  220 50
-$bLatency = New-ActionButton '延迟测试'      232 60  220 50
-$bLowLat  = New-ActionButton '路由守卫  '      0   120 220 50
-$bProxy   = New-ActionButton '校园网登录  '      232 120 220 50
-$bRescue  = New-ActionButton '网络急救'      0   180 220 50
-$bFolder  = New-ActionButton '打开代理软件'  232 180 220 50
-$bReport  = New-ActionButton '导出诊断报告'  0   240 220 50
-$bRestore = New-ActionButton '还原与备份…'      232 240 220 50
-
-    # 悬停提示
-    $tip = New-Object System.Windows.Forms.ToolTip
-    $tip.AutoPopDelay = 15000
-    $tip.InitialDelay = 350
-    $tip.ReshowDelay = 80
-    $tip.SetToolTip($bProxyOn,  '开启代理：验证代理可用后开启系统代理（端口/协议/转发/出口五层检查）')
-    $tip.SetToolTip($bProxyOff, '国内直连：关闭系统代理、恢复自动 DNS、检查 TUN 与 VPN 是否抢路由')
-    $tip.SetToolTip($bSettings, '配置代理客户端路径、混合端口，并测试连通性')
-    $tip.SetToolTip($bCheck,    '延迟 / 抖动 / 丢包 / 信号 / 断链统计')
-    $tip.SetToolTip($bOpt,      '认证状态 / DNS / IPv6 / MTU / 代理绕过 / 信号，约 15 秒')
-    $tip.SetToolTip($bDns,      '实测内网与公共 DNS 的响应速度，选最快的')
-    $tip.SetToolTip($bLatency,  '连续采样并绘制曲线，看延迟是否稳定')
-    $tip.SetToolTip($bLowLat,   '查虚拟网卡抢占 / TUN 双开 / 端口对内网开放 / 代理残留')
-    $tip.SetToolTip($bProxy,    '用默认浏览器打开校园网认证页，账号密码由你在浏览器里输入')
-    $tip.SetToolTip($bRescue,   '清代理残留 / 刷 DNS / 续租 IP / 必要时重启网卡')
-    $tip.SetToolTip($bFolder,   '启动设置里配置的代理客户端')
-    $tip.SetToolTip($bReport,   '生成带断链时间点的文本报告，便于报修')
-    $tip.SetToolTip($bRestore,  '从 runtime 备份还原 DNS / 跃点 / 传递优化')
-    $tip.SetToolTip($script:proxyStateLabel, '当前代理状态；红=系统代理开着但端口没人监听')
-
-# --- 曲线 ---
-$chart = New-Object System.Windows.Forms.Panel
-$chart.Location = New-Object System.Drawing.Point(22, 462)
-$chart.Size = New-Object System.Drawing.Size(444, 160)
-$chart.BackColor = $C.Bg
-$form.Controls.Add($chart)
-
-# --- 断链时间线按钮 ---
-$bTimeline = New-Object System.Windows.Forms.Button
-$bTimeline.Text = '查看断链时间线（近 7 天）'
-$bTimeline.Location = New-Object System.Drawing.Point(22, 620)
-$bTimeline.Size = New-Object System.Drawing.Size(444, 44)
-$bTimeline.FlatStyle = 'Flat'
-$bTimeline.FlatAppearance.BorderSize = 0
-$bTimeline.BackColor = $C.Btn
-$bTimeline.ForeColor = [System.Drawing.Color]::White
-$bTimeline.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
-$bTimeline.Cursor = 'Hand'
-$bTimeline.Tag = $C.Btn
-$bTimeline.Add_MouseEnter({ $this.BackColor = $C.BtnHover })
-$bTimeline.Add_MouseLeave({ $this.BackColor = $this.Tag })
-$form.Controls.Add($bTimeline)
-$tip.SetToolTip($bTimeline, '近 7 天断链分布，判断是否被 AP 周期性踢下线')
-
+    # 行数变了，把每行高度重新均分，避免最后一行被挤掉
+    $rowPct = [math]::Round(100 / [math]::Max(1, $card.RowCount), 3)
+    foreach ($rs in $card.RowStyles) { $rs.Height = $rowPct }
+$chart = New-Object Windows.Forms.Panel
+$chart.Dock = 'Fill'
+$chart.BackColor = $C.Card
+$chart.Margin = New-Object Windows.Forms.Padding(0,10,0,10)
+$detailLayout.Controls.Add($chart,0,1)
 $chart.Add_Paint({
-    param($s, $e)
-    $g = $e.Graphics
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear($C.Bg)
-
-    $penGrid = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(0x2C, 0x31, 0x3A)), 1
-    for ($i = 1; $i -lt 4; $i++) {
-        $y = [int]($chart.Height * $i / 4)
-        $g.DrawLine($penGrid, 0, $y, $chart.Width, $y)
+    param($sender,$paintArgs)
+    $graphics = $paintArgs.Graphics
+    $graphics.Clear($C.Card)
+    $brush = New-Object Drawing.SolidBrush($C.Dim)
+    $graphics.DrawString('延迟采样曲线 · 更多工具中运行延迟测试', $form.Font, $brush, 8, 6)
+    $values = @($script:samples | Where-Object { $_ -ge 0 })
+    if ($values.Count -ge 2) {
+        $maximum = [Math]::Max(($values | Measure-Object -Maximum).Maximum,30)
+        $points = @()
+        for ($sampleIndex=0; $sampleIndex -lt $values.Count; $sampleIndex++) {
+            $points += New-Object Drawing.PointF([single]($sampleIndex * ($chart.Width-16) / ($values.Count-1)+8),[single]($chart.Height-8-($values[$sampleIndex]/$maximum)*($chart.Height-35)))
+        }
+        $pen = New-Object Drawing.Pen($C.Accent,2)
+        $graphics.DrawLines($pen,[Drawing.PointF[]]$points)
+        $pen.Dispose()
     }
-    $penGrid.Dispose()
-
-    $vals = @($script:samples | Where-Object { $_ -ge 0 })
-    $fTitle = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
-    $bDim = New-Object System.Drawing.SolidBrush($C.Dim)
-    $g.DrawString('延迟曲线 (ms)', $fTitle, $bDim, 4, 4)
-    if ($vals.Count -lt 2) {
-        $g.DrawString('运行「延迟测试」后在此显示曲线', $fTitle, $bDim, 10, 60)
-        return
-    }
-    $maxV = [Math]::Max((($vals | Measure-Object -Maximum).Maximum), 30)
-    $penLine = New-Object System.Drawing.Pen ($C.Accent), 2
-    $pts = @()
-    for ($i = 0; $i -lt $vals.Count; $i++) {
-        $x = if ($vals.Count -gt 1) { $chart.Width * $i / ($vals.Count - 1) } else { 0 }
-        $y = $chart.Height - (($vals[$i] / $maxV) * ($chart.Height - 22)) - 10
-        $pts += New-Object System.Drawing.PointF([single]$x, [single]$y)
-    }
-    if ($pts.Count -ge 2) { $g.DrawLines($penLine, [System.Drawing.PointF[]]$pts) }
-    $penLine.Dispose()
-    $fMax = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
-    $g.DrawString(("{0} ms" -f [int]$maxV), $fMax, $bDim, ($chart.Width - 44), 4)
+    $brush.Dispose()
 })
-
-# --- 日志 ---
-$log = New-Object System.Windows.Forms.RichTextBox
-$log.Location = New-Object System.Drawing.Point(478, 462)
-$log.Size = New-Object System.Drawing.Size(464, 268)
+$log = New-Object Windows.Forms.RichTextBox
+$log.Dock = 'Fill'
 $log.BackColor = $C.Card
 $log.ForeColor = $C.Text
-$log.BorderStyle = 'None'
-$log.Font = New-Object System.Drawing.Font('Consolas', 9)
+$log.Font = New-Object Drawing.Font($form.Font.FontFamily,10)
 $log.ReadOnly = $true
-$log.ScrollBars = 'Vertical'
+$log.BorderStyle = 'None'
 $log.DetectUrls = $false
-$form.Controls.Add($log)
+$log.ScrollBars = 'Vertical'
+$detailLayout.Controls.Add($log,0,2)
 
-$foot = New-Object System.Windows.Forms.Label
-$foot.Text = '所有改动均可回滚 · 备份见 runtime\network-backup-*.json'
-$foot.ForeColor = [System.Drawing.Color]::FromArgb(0x6B, 0x72, 0x80)
-$foot.Cursor = 'Hand'
-$tip.SetToolTip($foot, '点击打开完整使用说明')
-$foot.Add_Click({ Show-HelpWindow })
-$foot.Location = New-Object System.Drawing.Point(22, 746)
-$foot.Size = New-Object System.Drawing.Size(600, 20)
-$form.Controls.Add($foot)
+$repairLayout = New-Object Windows.Forms.TableLayoutPanel
+$repairLayout.Dock = 'Fill'
+$repairLayout.ColumnCount = 1
+$repairLayout.RowCount = 4
+[void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',68)))
+[void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',55)))
+[void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+[void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',128)))
+$repairsPage.Controls.Add($repairLayout)
+$lbRepairSummary = New-TextLabel $repairLayout '按证据逐项处理。每项先保存原值，执行后读回核对；默认全部不选。' 11
+$lbRepairSummary.Dock = 'Fill'
+$repairLayout.SetCellPosition($lbRepairSummary,(New-Object Windows.Forms.TableLayoutPanelCellPosition(0,0)))
+$repairActions = New-Object Windows.Forms.FlowLayoutPanel
+$repairActions.Dock = 'Fill'
+$repairLayout.Controls.Add($repairActions,0,1)
+$bScanRepairs = New-AppButton $repairActions '检测可处理项' $false 160
+$bApplyRepairs = New-AppButton $repairActions '应用已选项' $true 160
+$bApplyRepairs.Enabled = $false
+$repairRows = New-Object Windows.Forms.FlowLayoutPanel
+$repairRows.Dock = 'Fill'
+$repairRows.FlowDirection = 'TopDown'
+$repairRows.WrapContents = $false
+$repairRows.AutoScroll = $true
+$repairLayout.Controls.Add($repairRows,0,2)
+$repairHistoryBox = New-Object Windows.Forms.TableLayoutPanel
+$repairHistoryBox.Dock = 'Fill'
+$repairHistoryBox.ColumnCount = 2
+[void]$repairHistoryBox.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+[void]$repairHistoryBox.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',164)))
+$repairLayout.Controls.Add($repairHistoryBox,0,3)
+$repairHistoryList = New-Object Windows.Forms.ListBox
+$repairHistoryList.Dock = 'Fill'
+$repairHistoryList.BackColor = $C.Card
+$repairHistoryList.ForeColor = $C.Text
+$repairHistoryList.DisplayMember = 'Display'
+$repairHistoryBox.Controls.Add($repairHistoryList,0,0)
+$historyButtons = New-Object Windows.Forms.FlowLayoutPanel
+$historyButtons.Dock = 'Fill'
+$historyButtons.FlowDirection = 'TopDown'
+$repairHistoryBox.Controls.Add($historyButtons,1,0)
+$bUndoRepair = New-AppButton $historyButtons '撤销所选记录' $false 150
+$bViewBackup = New-AppButton $historyButtons '查看备份文件' $false 150
+$bUndoRepair.Enabled = $false
+$bViewBackup.Enabled = $false
+$repairHistoryList.Add_SelectedIndexChanged({ $bUndoRepair.Enabled = $repairHistoryList.SelectedIndex -ge 0 -and -not $script:busy; $bViewBackup.Enabled = $repairHistoryList.SelectedIndex -ge 0 })
+
+$toolsLayout = New-Object Windows.Forms.TableLayoutPanel
+$toolsLayout.Dock = 'Fill'
+$toolsLayout.ColumnCount = 1
+$toolsLayout.RowCount = 3
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',54)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',60)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+$toolsPage.Controls.Add($toolsLayout)
+$toolsHint = New-TextLabel $toolsLayout '需要时再选择专项工具。网络写入会显示影响并按对应路径保存备份。' 11
+$toolsHint.Dock = 'Fill'
+$modePanel = New-Object Windows.Forms.FlowLayoutPanel
+$modePanel.Dock = 'Fill'
+$toolsLayout.Controls.Add($modePanel,0,1)
+$bProxyOn = New-AppButton $modePanel '验证并开启系统代理' $false 220
+$bProxyOff = New-AppButton $modePanel '只关闭手动系统代理' $false 220
+$btnPanel = New-Object Windows.Forms.FlowLayoutPanel
+$btnPanel.Dock = 'Fill'
+$btnPanel.AutoScroll = $true
+$toolsLayout.Controls.Add($btnPanel,0,2)
+$bCheck = New-AppButton $btnPanel '详细连接体检' $false 220
+$bOpt = New-AppButton $btnPanel '校园网体检' $false 220
+$bDns = New-AppButton $btnPanel 'DNS 优选（备份后应用）' $false 220
+$bLatency = New-AppButton $btnPanel '延迟采样测试' $false 220
+$bLowLat = New-AppButton $btnPanel '路由检查与逐项修复' $false 220
+$bProxy = New-AppButton $btnPanel '打开校园网登录页' $false 220
+$bRescue = New-AppButton $btnPanel '网络急救…' $false 220
+$bFolder = New-AppButton $btnPanel '打开代理软件' $false 220
+$bReport = New-AppButton $btnPanel '导出诊断报告' $false 220
+$bRestore = New-AppButton $btnPanel '还原与备份…' $false 220
+$bWired = New-AppButton $btnPanel '检查有线连接' $false 220
+$bAutoDns = New-AppButton $btnPanel '恢复当前网卡自动 DNS…' $false 220
+$bReconnect = New-AppButton $btnPanel '重新关联当前 Wi-Fi…' $false 220
+$bDirectAdvanced = New-AppButton $btnPanel '高级：原直连模式…' $false 220
+$tip = New-Object Windows.Forms.ToolTip
+$tip.AutoPopDelay = 15000
+$tip.SetToolTip($bProxyOff,'仅关闭手动系统代理；保留 PAC、DNS 与路由，先保存原值。')
+$tip.SetToolTip($bWired,'读取当前以太网协商速率、IPv4 出口、认证与网卡累计计数，不调整双工、MTU 或 TCP。')
+$tip.SetToolTip($bDns,'手动测试 DNS 后，确认才应用；应用前保存原值。')
+$foot = New-Object Windows.Forms.LinkLabel
+$foot.Text = '使用说明 · DNS、接口优先级与无线频段原值见网络备份；逐项修复可单独撤销。'
+$foot.Dock = 'Fill'
+$foot.LinkColor = $C.Dim
+$foot.ActiveLinkColor = $C.Text
+$foot.VisitedLinkColor = $C.Dim
+$foot.TextAlign = 'MiddleLeft'
+$foot.Add_LinkClicked({ Show-HelpWindow })
+$rootLayout.Controls.Add($foot,0,2)
+$homePage.Add_Resize({
+    $width = [Math]::Max(200,$homePage.ClientSize.Width-62)
+    foreach ($wrappingLabel in @($lbConclusion,$lbConclusionDetail,$lbCheckedAt,$lbHomeHistory)) { $wrappingLabel.MaximumSize = New-Object Drawing.Size($width,0) }
+    foreach ($wrappingLabel in @($lbConnectionEvidence,$lbNetworkEvidence,$script:proxyStateLabel,$script:proxyStateDetail)) { $wrappingLabel.MaximumSize = New-Object Drawing.Size([Math]::Max(160,$width-40),0) }
+})
 
 function Write-Log {
     param([string]$Msg, [string]$Level = 'info')
@@ -1225,7 +1293,14 @@ function Get-BandPreference {
 function Set-BandPreference([int]$Value) {
     $wifi = Get-WirelessAdapter
     if (-not $wifi) { throw '没有找到在用的无线网卡' }
+    $property = Get-NetAdapterAdvancedProperty -Name $wifi.Name -RegistryKeyword 'RoamingPreferredBandType' -ErrorAction Stop
+    if ([int](@($property.RegistryValue)[0]) -eq $Value) { return }
+    $backupPath = New-WifiBandBackup -InterfaceAlias $wifi.Name -RegistryKeyword 'RoamingPreferredBandType'
+    Add-IgnoreWindow '修改无线频段偏好' 30
     Set-NetAdapterAdvancedProperty -Name $wifi.Name -RegistryKeyword 'RoamingPreferredBandType' -RegistryValue $Value -NoRestart -ErrorAction Stop
+    $after = Get-NetAdapterAdvancedProperty -Name $wifi.Name -RegistryKeyword 'RoamingPreferredBandType' -ErrorAction Stop
+    if ([int](@($after.RegistryValue)[0]) -ne $Value) { throw ('频段偏好写后复检未达到目标；原值备份：' + $backupPath) }
+    return $backupPath
 }
 
 function Invoke-ReconnectWifi {
@@ -1376,60 +1451,41 @@ function Connect-CampusWifi([string]$Ssid, [bool]$IsOpen = $false) {
 }
 
 function Open-CampusLogin {
-    $cfg = Get-CampusConfig
-    if (-not $cfg) {
-        Write-Log '没有找到校园网登录地址' 'warn'
-        [void][System.Windows.Forms.MessageBox]::Show(
-            "没有找到校园网登录地址。`n`n请在 campus-config.json 的 portalUrl 里填写认证页地址。",
-            '校园网登录', 'OK', 'Warning')
+    $snapshot = $script:networkSnapshot
+    if (-not $snapshot) {
+        Write-Log '请等待本轮检测完成，再打开登录页。' 'warn'
+        Request-StatusRefresh
         return
     }
-    $url = [string]$cfg.portalUrl
-
-    # 1. 先切到校园 WiFi（配置里有 ssid 才做）
-    $ssid = [string]$cfg.ssid
-    $connected = $true
-    if (-not [string]::IsNullOrWhiteSpace($ssid)) {
-        $connected = Connect-CampusWifi $ssid ([bool]$cfg.ssidOpen)
-        if (-not $connected) {
-            $r = [System.Windows.Forms.MessageBox]::Show(
-                ("没能连接到 " + $ssid + "。`n`n仍然尝试打开认证页吗？（认证页通常只在校园网内可达）"),
-                '校园网登录', 'YesNo', 'Warning')
-            if ($r -ne 'Yes') { return }
-        }
+    if ($snapshot.Conclusion.State -eq 'Online') {
+        Write-Log '外网已验证可用，无需再次认证。' 'ok'
+        return
     }
-
-    # 2. 已在校园网且能直连上网时不需要再认证（只在真的连上校园网时才跳过）
-    $onCampusNow = (-not [string]::IsNullOrWhiteSpace($ssid)) -and ((Get-CurrentWifiSsid) -eq $ssid)
-    $quality = Test-NetworkQuality
-    if ($onCampusNow -and $quality.Usable) {
-        Write-Log ('已连接到 ' + $ssid + ' 且能直连上网，无需认证') 'ok'
+    if ($snapshot.Conclusion.State -eq 'Unknown') {
+        Write-Log '当前连接状态未知，正在重新检测；取得证据后再打开登录页。' 'warn'
+        Request-StatusRefresh
+        return
     }
-
-    # 3. 认证页可达性
-    $info = Get-NetInfo
-    $reachable = Test-PortalReachable $url
-    if (-not $reachable) {
-        Write-Log ("认证页 " + $url + " 当前不可达（网络：" + $info.SSID + "，网关 " + $info.Gateway + "）") 'warn'
-        $r2 = [System.Windows.Forms.MessageBox]::Show(
-            ("认证页 " + $url + " 现在连不上。`n`n当前网络：" + $info.SSID + "（" + $info.Gateway + "）`n`n仍然尝试打开吗？"),
-            '校园网登录', 'YesNo', 'Warning')
-        if ($r2 -ne 'Yes') { return }
+    $cfg = Get-CampusConfig
+    if (-not $cfg -or [string]::IsNullOrWhiteSpace([string]$cfg.portalUrl)) {
+        Write-Log '尚未配置认证网址，已打开设置；有线连接可直接填写校园认证网址。' 'warn'
+        Show-SettingsWindow
+        return
     }
-
-    # 4. 认证页在校内网段，走系统代理一定打不开：先切国内直连
-    if ($info.ProxyOn) {
-        Write-Log '系统代理开着，认证页走代理会打不开；先切换国内直连' 'warn'
-        Invoke-ModeFile 'direct'
-        Start-Sleep -Milliseconds 400
+    $portalUri = $null
+    if (-not [uri]::TryCreate([string]$cfg.portalUrl, [UriKind]::Absolute, [ref]$portalUri) -or $portalUri.Scheme -notin @('http','https')) {
+        Write-Log '认证网址需为完整的 http:// 或 https:// 地址，请在设置中更正。' 'warn'
+        Show-SettingsWindow
+        return
     }
-
+    if ($snapshot.Info.ProxyOn) {
+        Write-Log '手动系统代理处于开启状态。如认证页无法访问，可在「逐项修复」中查看并选择关闭；此处只打开浏览器。' 'warn'
+    }
     try {
-        Start-Process $url
-        Write-Log ('已用默认浏览器打开登录页：' + $url) 'ok'
+        Start-Process $portalUri.AbsoluteUri
+        Write-Log ('已用默认浏览器打开认证页：' + $portalUri.AbsoluteUri) 'ok'
     } catch {
         Write-Log ('调用浏览器失败：' + $_.Exception.Message) 'err'
-        try { Start-Process 'explorer.exe' $url } catch { }
     }
 }
 
@@ -1548,129 +1604,73 @@ function Test-NetworkQuality {
     return [pscustomobject]@{ Usable = $false; Kind = '假联网'; Detail = 'DNS 与 HTTP 都不通' }
 }
 
+function Update-NetworkMonitorUi {
+    # 由 1 秒 UI 定时器调用；只消费后台线程产出的快照，不做任何阻塞探测
+    if (-not $script:monitor -or $script:monitorBusy) { return }
+    $script:monitorBusy = $true
+    try {
+        $snap = Receive-NetworkMonitorSnapshot -Monitor $script:monitor
+        if (-not $snap) { return }
+        $script:lastSnapshot = $snap
+        $c = Resolve-NetworkConclusion -Snapshot $snap
+        $script:lastConclusion = $c
 
-function Get-LinkEventStore {
-    # 工具自己记录的断链/抖动（含持续时间），单一数据源
-    $path = Join-Path $script:DataRoot 'runtime\link-events.json'
-    $out = @()
-    if (Test-Path -LiteralPath $path) {
-        try {
-            foreach ($e in @(Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json)) {
-                if (-not $e -or -not $e.at) { continue }
-                $out += [pscustomobject]@{
-                    At      = [datetime]$e.at
-                    Kind    = [string]$e.kind
-                    Seconds = [int]$e.seconds
-                    Source  = if ($e.source) { [string]$e.source } else { 'watchdog' }
+        if ($lbConclusion) {
+            $lbConclusion.Text = [string]$c.Title
+            $qColor = $C.Text
+            switch ([string]$c.State) {
+                'Online'          { if ($C.Ok)   { $qColor = $C.Ok } }
+                'NeedsAuth'       { if ($C.Warn) { $qColor = $C.Warn } }
+                'ProxyIssue'      { if ($C.Warn) { $qColor = $C.Warn } }
+                'Offline'         { if ($C.Dim)  { $qColor = $C.Dim } }
+                'ExternalFailure' { if ($C.Err)  { $qColor = $C.Err } }
+            }
+            if ($qColor) { $lbConclusion.ForeColor = $qColor }
+        }
+        if ($lbConclusionDetail) { $lbConclusionDetail.Text = [string]$c.Detail }
+        if ($lbCheckedAt) {
+            $at = if ($c.CheckedAt) { ([datetime]$c.CheckedAt).ToString('HH:mm:ss') } else { '尚未取得' }
+            $known = if ($c.Known) { '证据完整' } else { '证据不完整' }
+            $lbCheckedAt.Text = "检测证据：$at  ·  $known"
+        }
+
+        $info = $snap.Info
+        if ($lbConnectionEvidence) {
+            $ssid = '未识别'
+            if ($info) {
+                foreach ($key in @('SSID','ssid')) {
+                    if ($info.Contains($key) -and $info[$key] -and [string]$info[$key] -ne '—') { $ssid = [string]$info[$key]; break }
                 }
             }
-        } catch { }
-    }
-    return @($out)
-}
-
-function Add-LinkEvent($Kind, $Seconds, $Source = 'watchdog') {
-    $path = Join-Path $script:DataRoot 'runtime\link-events.json'
-    $dir = Split-Path -Parent $path
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $list = @(Get-LinkEventStore)
-    $list += [pscustomobject]@{ At = (Get-Date); Kind = $Kind; Seconds = $Seconds; Source = $Source }
-    # 只保留最近 30 天
-    $cut = (Get-Date).AddDays(-30)
-    $list = @($list | Where-Object { $_.At -ge $cut })
-    $doc = @($list | ForEach-Object {
-        [ordered]@{ at = $_.At.ToString('s'); kind = $_.Kind; seconds = $_.Seconds; source = $_.Source }
-    })
-    [IO.File]::WriteAllText($path, ($doc | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
-}
-
-function Get-SystemDisconnectTimes([int]$Days = 7) {
-    $since = (Get-Date).AddDays(-$Days)
-    try {
-        $ev = Get-WinEvent -FilterHashtable @{
-            LogName   = 'Microsoft-Windows-WLAN-AutoConfig/Operational'
-            StartTime = $since
-            Id        = 11004
-        } -ErrorAction Stop
-        return @($ev | Sort-Object TimeCreated | ForEach-Object { $_.TimeCreated })
-    } catch { return @() }
-}
-
-function Get-UnifiedLinkEvents([int]$Days = 7) {
-    # 断链的计数单位是「会话」，不是「事件」。
-    # 一次断链会连续产生多条 11004（断开、重试、重连），按条数计会把次数虚高一倍。
-    #   · 3 分钟内的系统事件合并为同一个会话
-    #   · 工具自己记录的断链带持续时间，优先采用
-    #   · 两边都记到的同一次断链，合并成一条
-    $GapSeconds = 180
-    $since = (Get-Date).AddDays(-$Days)
-
-    # 1. 工具记录的断链（有持续时间）
-    $watch = @(Get-LinkEventStore | Where-Object { $_.At -ge $since -and $_.Kind -eq '断链' } |
-        ForEach-Object {
-            [pscustomobject]@{
-                Start   = $_.At.AddSeconds(-1 * [math]::Max(0, $_.Seconds))
-                End     = $_.At
-                Seconds = [int]$_.Seconds
-                Source  = 'watchdog'
-                Events  = 1
-            }
-        })
-
-    # 2. 系统事件：先按 3 分钟聚成会话，并排除维护窗口
-    $sys = @(Get-SystemDisconnectTimes -Days $Days)
-    $ignored = 0
-    $kept = New-Object System.Collections.ArrayList
-    foreach ($t in $sys) {
-        if (Test-IgnoredTime $t) { $ignored++; continue }
-        [void]$kept.Add($t)
-    }
-
-    $sysSessions = New-Object System.Collections.ArrayList
-    $curStart = $null; $curEnd = $null; $curN = 0
-    foreach ($t in ($kept | Sort-Object)) {
-        if ($null -eq $curStart -or ($t - $curEnd).TotalSeconds -gt $GapSeconds) {
-            if ($null -ne $curStart) {
-                [void]$sysSessions.Add([pscustomobject]@{ Start=$curStart; End=$curEnd; Seconds=0; Source='wlan'; Events=$curN })
-            }
-            $curStart = $t; $curEnd = $t; $curN = 1
-        } else {
-            $curEnd = $t; $curN++
+            $lbConnectionEvidence.Text = "连接与认证：$ssid"
         }
-    }
-    if ($null -ne $curStart) {
-        [void]$sysSessions.Add([pscustomobject]@{ Start=$curStart; End=$curEnd; Seconds=0; Source='wlan'; Events=$curN })
-    }
-
-    # 3. 合并：系统会话与工具会话重叠（±90 秒）时并成一条，保留工具记录的时长
-    $all = New-Object System.Collections.ArrayList
-    foreach ($w in $watch) { [void]$all.Add($w) }
-    $mergedCount = 0
-    foreach ($sess in $sysSessions) {
-        $hit = $null
-        foreach ($a in $all) {
-            if ([math]::Abs(($a.Start - $sess.Start).TotalSeconds) -le 90 -or
-                [math]::Abs(($a.End - $sess.End).TotalSeconds) -le 90) { $hit = $a; break }
+        if ($lbNetworkEvidence -and $snap.Quality) {
+            $lbNetworkEvidence.Text = '外网质量：' + [string]$snap.Quality.Detail
         }
-        if ($hit) {
-            $hit.Events += $sess.Events
-            if ($sess.Start -lt $hit.Start) { $hit.Start = $sess.Start }
-            if ($sess.End -gt $hit.End) { $hit.End = $sess.End }
-            $mergedCount++
-        } else {
-            [void]$all.Add($sess)
+        if ($script:proxyStateLabel -and $snap.Proxy) {
+            $script:proxyStateLabel.Text = if ($snap.Proxy.Enabled) { '系统代理已开启' } else { '系统代理已关闭' }
+            if ($script:proxyStateDetail) { $script:proxyStateDetail.Text = [string]$snap.Proxy.Detail }
         }
-    }
 
-    $sessions = @($all | Sort-Object Start)
-    return [pscustomobject]@{
-        Sessions = $sessions
-        SystemN  = $sys.Count
-        Ignored  = $ignored
-        Merged   = $mergedCount
-        RawMerged = $(if ($sysSessions.Count -gt 0) { $sys.Count - $sysSessions.Count } else { 0 })
+        # 断链历史读取较重，60 秒一次即可
+        if ($lbHomeHistory -and ((Get-Date) - $script:historyAt).TotalSeconds -ge 60) {
+            $script:historyAt = Get-Date
+            $u = Get-UnifiedLinkEvents -Days 1
+            $today = (Get-Date).Date
+            $n = @($u.Sessions | Where-Object { $_.Start -ge $today -or $_.End -ge $today }).Count
+            $lbHomeHistory.Text = "断链历史：今日 $n 次  ·  " + [string]$u.Detail
+        }
+    } catch {
+        # 监测器异常不能影响界面
+        if (((Get-Date) - $script:monitorErrAt).TotalSeconds -gt 60) {
+            $script:monitorErrAt = Get-Date
+            try { [IO.File]::AppendAllText((Join-Path $script:DataRoot 'runtime\monitor-error.txt'), ((Get-Date).ToString('HH:mm:ss') + ' UI刷新: ' + $_.Exception.ToString() + "`r`n")) } catch { }
+        }
+    } finally {
+        $script:monitorBusy = $false
     }
 }
+
 
 function Invoke-WifiWatchdog {
     # 断链判定：
@@ -1979,7 +1979,7 @@ function Show-WifiListWindow {
             & $script:UpdateWifiArrows
         }
         [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 600
+        Start-Sleep -Milliseconds $(if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 })
         [System.Windows.Forms.Application]::DoEvents()
         if (-not ('W2.Gdi' -as [type])) {
             Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);'
@@ -2516,7 +2516,7 @@ function Show-HelpWindow {
         }
         $w.Show()
         [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 600
+        Start-Sleep -Milliseconds $(if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 })
         [System.Windows.Forms.Application]::DoEvents()
         $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
         $gfx = [System.Drawing.Graphics]::FromImage($bmp)
@@ -2530,6 +2530,50 @@ function Show-HelpWindow {
         return
     }
     [void]$w.ShowDialog()
+}
+
+# ---------- 后台任务：耗时操作不阻塞界面 ----------
+$script:uiWork = $null
+
+function Start-UiTask {
+    param(
+        [Parameter(Mandatory=$true)][string]$Title,
+        [Parameter(Mandatory=$true)][scriptblock]$Code,
+        [scriptblock]$Completed
+    )
+    # 同一时刻只允许一个写操作任务，避免并发修改互相打架
+    if ($script:uiWork) { return }
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript($Code.ToString())
+    $handle = $ps.BeginInvoke()
+    $script:uiWork = [pscustomobject]@{
+        Title      = $Title
+        PowerShell = $ps
+        Handle     = $handle
+        Completed  = $Completed
+        Started    = Get-Date
+    }
+    try { Set-Busy $true } catch { }
+    try { Write-Log ("开始后台任务：" + $Title) 'dim' } catch { }
+}
+
+function Receive-UiTask {
+    if (-not $script:uiWork) { return }
+    $work = $script:uiWork
+    if (-not $work.Handle.IsCompleted) { return }
+    $result = $null
+    try {
+        $out = $work.PowerShell.EndInvoke($work.Handle)
+        if ($out -and $out.Count -gt 0) { $result = $out[-1] }
+    } catch {
+    } finally {
+        try { $work.PowerShell.Dispose() } catch { }
+    }
+    $script:uiWork = $null
+    try { Set-Busy $false } catch { }
+    try { Write-Log ("后台任务完成：" + $work.Title) 'ok' } catch { }
+    try { if ($work.Completed) { & $work.Completed $result } } catch { }
+    try { Request-StatusRefresh } catch { }
 }
 
 function Test-AdminAccess {
@@ -2555,6 +2599,24 @@ $badge.Add_Click({
 
 # ============================ 事件绑定 ============================
 $bCheck.Add_Click({ Invoke-Check })
+
+    # ---- 后台监测器：1 秒读一次快照，探测都在后台 runspace 里做 ----
+    $script:monitor = $null
+    $script:monitorBusy = $false
+    $script:historyAt = [datetime]::MinValue
+    $script:monitorErrAt = [datetime]::MinValue
+    $script:monitorUiTimer = New-Object System.Windows.Forms.Timer
+    $script:monitorUiTimer.Interval = 1000
+    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi })
+    $script:monitorUiTimer.Start()
+
+    $bPrimary.Add_Click({
+        try { Request-NetworkMonitorRefresh -Monitor $script:monitor -Full } catch { }
+        if ($lbConclusion) { $lbConclusion.Text = '正在完整检测…' }
+        if ($lbConclusionDetail) { $lbConclusionDetail.Text = '已请求完整检测，结果会自动更新，界面可继续使用。' }
+    })
+    $bRefresh.Add_Click({ try { Request-NetworkMonitorRefresh -Monitor $script:monitor } catch { } })
+    $bDetails.Add_Click({ if ($pages) { $pages.SelectedTab = $detailsPage } })
 $bOpt.Add_Click({ Invoke-CampusCheck })
 $bDns.Add_Click({ if (Test-AdminAccess) { Set-Busy $true; try { Invoke-DnsOptimize } catch { Write-Log $_.Exception.Message 'err' } finally { Set-Busy $false } } })
 $bLatency.Add_Click({ Invoke-LatencyTest })
@@ -2597,7 +2659,8 @@ $timer.Add_Tick({
 $form.Add_FormClosing({
     param($sender,$closingArgs)
     if ($script:busy) { $closingArgs.Cancel=$true; Write-Log '请等待当前操作结束后关闭，以免中断状态保存。' 'warn'; return }
-    foreach ($activeTimer in @($timer,$script:wifiTimer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
+    foreach ($activeTimer in @($timer,$script:wifiTimer,$script:monitorUiTimer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
+    try { if ($script:monitor) { Stop-NetworkMonitor -Monitor $script:monitor } } catch { }
     $restoreMenu.Dispose()
 })
 $timer.Start()
@@ -2621,7 +2684,16 @@ $form.Add_Shown({
 
     Update-Status | Out-Null
     Write-Log '就绪。建议先点「一键体检」了解现状。' 'dim'
+
+    # 启动后台监测器（只读；失败时记录到日志，不影响界面）
+    try {
+        $script:monitor = New-NetworkMonitor -ProjectRoot $script:ProjRoot -DataRoot $script:DataRoot
+        Request-NetworkMonitorRefresh -Monitor $script:monitor -Full
+    } catch {
+        try { Write-Log ('后台监测启动失败：' + $_.Exception.Message) 'err' } catch { }
+    }
     try { Show-FirstRunHints } catch { }
+
     $i = Get-NetInfo
     if ($i.ProxyOn -and $i.ProxyKnown -and -not $i.ProxyPort) { Write-Log '系统代理目标暂时无法连接；可检查代理软件，或主动关闭手动系统代理。' 'warn' }
     # 焦点给日志框，避免按钮上出现白色焦点框
