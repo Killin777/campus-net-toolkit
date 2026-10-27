@@ -605,13 +605,16 @@ $repairLayout.RowCount = 4
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',128)))
 $repairsPage.Controls.Add($repairLayout)
-$lbRepairSummary = New-TextLabel $repairLayout '按证据逐项处理。每项先保存原值，执行后读回核对；默认全部不选。' 11
+    $lbRepairSummary = New-TextLabel $repairLayout '逐项修复尚未启用：底层 RouteRepair 模块已完成并通过 28 项测试，界面接线进行中。当前请用「路由守卫」查看问题、按提示手动处理。' 11
+    $lbRepairSummary.ForeColor = $C.Warn
 $lbRepairSummary.Dock = 'Fill'
 $repairLayout.SetCellPosition($lbRepairSummary,(New-Object Windows.Forms.TableLayoutPanelCellPosition(0,0)))
 $repairActions = New-Object Windows.Forms.FlowLayoutPanel
 $repairActions.Dock = 'Fill'
 $repairLayout.Controls.Add($repairActions,0,1)
 $bScanRepairs = New-AppButton $repairActions '检测可处理项' $false 160
+    $bScanRepairs.Enabled = $false
+    try { if ($bApplyRepairs) { $bApplyRepairs.Enabled = $false } } catch { }
 $bApplyRepairs = New-AppButton $repairActions '应用已选项' $true 160
 $bApplyRepairs.Enabled = $false
 $repairRows = New-Object Windows.Forms.FlowLayoutPanel
