@@ -65,5 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\网络优化器.ps1 -Scr
 ## 发版规则
 
 **版本号只前进，不复用；不要 force 更新已发布的 tag。**
+**同类问题合并发版；24 小时内连续修补用 `--prerelease`；正式版一天最多一个。**
+**体积写 KiB（1024 进制），不要写 KB。**
 每次发版：VERSION → CHANGELOG → Build → 测试全绿 → 提交 → 新 tag → push → `gh release create`。
 详见 [SYSTEM-PROMPT.md](SYSTEM-PROMPT.md) 的「发布流程」。
