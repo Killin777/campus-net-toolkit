@@ -215,6 +215,15 @@ Test-Case '版本比较只认更高版本' {
     Assert-True (-not (Test-NewerVersion '1.4.2' 'v1.4.1')) '更低版本被判定为更新'
     Assert-True (-not (Test-NewerVersion '1.4.1' 'not-a-version')) '非法版本被当成更新'
 }
+Test-Case '崩溃报告包含版本、异常类型和消息' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Format-CrashReport')
+    $script:AppVersion = '9.9.9'
+    $exception = New-Object System.InvalidOperationException('模拟崩溃')
+    $text = Format-CrashReport $exception
+    Assert-True ($text -match '9\.9\.9' -and $text -match 'InvalidOperationException' -and $text -match '模拟崩溃') '崩溃报告缺少关键信息'
+    $record = New-Object System.Management.Automation.ErrorRecord($exception,'test','NotSpecified',$null)
+    Assert-True ((Format-CrashReport $record) -match '模拟崩溃') 'ErrorRecord 没有被拆出异常'
+}
 Write-Host ("产品回归：{0} 项，{1} 个失败" -f $script:total, $script:fail)
 if ($script:fail) { exit 1 }
 exit 0

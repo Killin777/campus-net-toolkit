@@ -26,6 +26,7 @@ param(
     [string]$PreviewScenario = '',
     [switch]$Settings,
     [switch]$EndpointEditor,
+    [switch]$CrashDemo,
     [switch]$Help,
     [switch]$DnsList,
     [switch]$WifiList,
@@ -66,6 +67,8 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+# 未处理异常交给自己的处理器（记录 + 提供上报入口），不弹系统默认对话框
+try { [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException) } catch { }
 
 # ============================ 主题 ============================
 $C = @{
@@ -3419,6 +3422,141 @@ function Invoke-OpenRepairRecord {
     try { Start-Process -FilePath $path } catch { Write-Log ('无法打开：' + $_.Exception.Message) 'err' }
 }
 
+function Format-CrashReport {
+    param($Exception)
+    $ex = $Exception
+    if ($ex -is [System.Management.Automation.ErrorRecord]) { $ex = $ex.Exception }
+    $versionText = if ($script:AppVersion) { [string]$script:AppVersion } else { '未知' }
+    $lines = @()
+    $lines += '校园网工具箱 崩溃报告'
+    $lines += ('版本: v' + $versionText)
+    $lines += ('时间: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
+    $lines += ('系统: ' + [Environment]::OSVersion.VersionString)
+    try { $lines += ('PowerShell: ' + $PSVersionTable.PSVersion.ToString()) } catch { }
+    $lines += ''
+    if (-not $ex) {
+        $lines += '异常对象为空，可能是脚本层错误（见运行日志）。'
+        return ($lines -join "`r`n")
+    }
+    $current = $ex
+    $depth = 0
+    while ($current -and $depth -lt 4) {
+        if ($depth -gt 0) { $lines += '--- 内部异常 ---' }
+        $lines += ('类型: ' + $current.GetType().FullName)
+        $lines += ('消息: ' + [string]$current.Message)
+        if ($current.StackTrace) {
+            $lines += '堆栈:'
+            $lines += [string]$current.StackTrace
+        }
+        $current = $current.InnerException
+        $depth++
+    }
+    return ($lines -join "`r`n")
+}
+
+function Write-CrashReport {
+    param($Exception)
+    $text = Format-CrashReport $Exception
+    $path = ''
+    try {
+        $dir = Join-Path $script:DataRoot 'runtime\crash'
+        [void][IO.Directory]::CreateDirectory($dir)
+        $path = Join-Path $dir ('crash-' + (Get-Date).ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,4) + '.txt')
+        [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($true)))
+    } catch { }
+    return [pscustomobject]@{ Text = $text; Path = $path }
+}
+
+function Show-CrashDialog {
+    param($Report)
+    if (-not $Report) { return }
+    if ($script:crashDialogOpen) { return }
+    $script:crashDialogOpen = $true
+    try {
+        $w = New-Object System.Windows.Forms.Form
+        $w.Icon = $form.Icon
+        $w.Text = '程序遇到错误'
+        $w.Size = New-Object System.Drawing.Size(660, 520)
+        $w.StartPosition = 'CenterParent'
+        $w.FormBorderStyle = 'FixedDialog'
+        $w.MaximizeBox = $false
+        $w.MinimizeBox = $false
+        $w.BackColor = $C.Bg
+        $w.ForeColor = $C.Text
+        $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI',9)
+
+        $lInfo = New-Object System.Windows.Forms.Label
+        $lInfo.Text = '程序遇到未处理的错误。报告只包含版本、异常和堆栈，不含网络配置。' + "`r`n" + '已保存到：' + $Report.Path
+        $lInfo.ForeColor = [System.Drawing.Color]::FromArgb(0xFB,0xBF,0x24)
+        $lInfo.Location = New-Object System.Drawing.Point(16, 12)
+        $lInfo.Size = New-Object System.Drawing.Size(612, 44)
+        $w.Controls.Add($lInfo)
+
+        $tb = New-Object System.Windows.Forms.TextBox
+        $tb.Multiline = $true
+        $tb.ReadOnly = $true
+        $tb.ScrollBars = 'Vertical'
+        $tb.WordWrap = $false
+        $tb.Location = New-Object System.Drawing.Point(16, 60)
+        $tb.Size = New-Object System.Drawing.Size(612, 340)
+        $tb.BackColor = $C.Card
+        $tb.ForeColor = $C.Text
+        $tb.BorderStyle = 'FixedSingle'
+        $tb.Font = New-Object System.Drawing.Font('Consolas',9)
+        $tb.Text = $Report.Text
+        $w.Controls.Add($tb)
+
+        $bCopy = New-DialogButton $w '复制详情' 16 418 120
+        $bSend = New-DialogButton $w '上报给开发者' 148 418 140
+        $bSend.BackColor = $C.Accent
+        $bSend.Tag = $C.Accent
+        $bClose = New-DialogButton $w '关闭' 540 418 88
+
+        $bCopy.Add_Click({
+            try { [Windows.Forms.Clipboard]::SetText($Report.Text); $bCopy.Text = '已复制' } catch { }
+        })
+        $bSend.Add_Click({
+            try { [Windows.Forms.Clipboard]::SetText($Report.Text) } catch { }
+            $bodyText = $Report.Text
+            if ($bodyText.Length -gt 700) { $bodyText = $bodyText.Substring(0,700) + "`r`n…（完整报告已复制到剪贴板）" }
+            $firstLine = ''
+            foreach ($line in ($Report.Text -split "`r?`n")) {
+                if ($line -like '消息:*') { $firstLine = $line.Substring(3).Trim(); break }
+            }
+            if ($firstLine.Length -gt 60) { $firstLine = $firstLine.Substring(0,60) }
+            $titleText = '[崩溃] v' + [string]$script:AppVersion + ' ' + $firstLine
+            $url = 'https://github.com/Killin777/campus-net-toolkit/issues/new?title=' + [Uri]::EscapeDataString($titleText) + '&body=' + [Uri]::EscapeDataString($bodyText)
+            try { Start-Process $url; $bSend.Text = '已打开浏览器' } catch { }
+        })
+        $bClose.Add_Click({ $w.Close() })
+        if ($script:captureCrash) {
+            if (-not ('W2.Gdi' -as [type])) {
+                Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);'
+            }
+            $w.Show()
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.Application]::DoEvents()
+            $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
+            $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+            $hdc = $gfx.GetHdc()
+            $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
+            $gfx.ReleaseHdc($hdc)
+            $gfx.Dispose()
+            if (-not $ok) { $w.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $w.Width, $w.Height))) }
+            $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Dispose()
+            $w.Close()
+            $w.Dispose()
+            Write-Host "已保存: $($script:capturePath) (PrintWindow=$ok)"
+            return
+        }
+        [void]$w.ShowDialog()
+    } finally {
+        $script:crashDialogOpen = $false
+    }
+}
+
 function Show-HelpWindow {
     $w = New-Object System.Windows.Forms.Form
     $w.Icon = $form.Icon
@@ -3849,4 +3987,29 @@ if ($Timeline) {
     return
 }
 
-[void]$form.ShowDialog()
+# 未处理异常：写报告 + 给「复制 / 上报」入口；后台线程只落盘
+$script:crashDialogOpen = $false
+try {
+    $script:threadExceptionHandler = [System.Windows.Forms.ThreadExceptionEventHandler]{
+        param($sender, $eventArgs)
+        try { Show-CrashDialog (Write-CrashReport $eventArgs.Exception) } catch { }
+    }
+    [System.Windows.Forms.Application]::add_ThreadException($script:threadExceptionHandler)
+    [AppDomain]::CurrentDomain.add_UnhandledException({
+        param($sender, $eventArgs)
+        try { [void](Write-CrashReport $eventArgs.ExceptionObject) } catch { }
+    })
+} catch { }
+
+if ($CrashDemo) {
+    $script:captureCrash = $true
+    $script:capturePath = $Out
+    Show-CrashDialog (Write-CrashReport (New-Object System.InvalidOperationException('演示：未处理的异常（截图用，不是真实错误）')))
+    return
+}
+
+try {
+    [void]$form.ShowDialog()
+} catch {
+    Show-CrashDialog (Write-CrashReport $_.Exception)
+}
