@@ -1696,6 +1696,15 @@ function Test-NetworkQuality {
     return [pscustomobject]@{ Usable = $false; Kind = '假联网'; Detail = 'DNS 与 HTTP 都不通' }
 }
 
+function Get-StatusColor([string]$State) {
+    # 永远返回一个有效 Color：查表命中就用，否则退回正文色
+    if ($State -eq 'Ok') { return $C.Ok }
+    if ($State -eq 'Degraded' -or $State -eq 'Warn') { return $C.Warn }
+    if ($State -eq 'NeedsAuth') { return $C.Warn }
+    if ($State -eq 'Fail' -or $State -eq 'Down' -or $State -eq 'Error') { return $C.Err }
+    return $C.Text
+}
+
 function Update-NetworkMonitorUi {
     # 由 1 秒 UI 定时器调用；只消费后台线程产出的快照，不做任何阻塞探测
     if (-not $script:monitor -or $script:monitorBusy) { return }
@@ -1826,12 +1835,7 @@ function Update-LayerUi {
 
     if ($lbConclusion) {
         $lbConclusion.Text = $c.Title
-        $lbConclusion.ForeColor = switch ($c.Severity) {
-            'Ok'        { $C.Ok }
-            'Degraded'  { $C.Warn }
-            'NeedsAuth' { $C.Warn }
-            default     { $C.Dim }
-        }
+        $lbConclusion.ForeColor = Get-StatusColor $c.Severity
     }
     if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
     if ($script:badgeLabels) {
@@ -1839,11 +1843,7 @@ function Update-LayerUi {
             $label = $script:badgeLabels[$b.Key]
             if (-not $label) { continue }
             $label.Text = ([string]$b.Mark) + ' ' + $b.Key
-            $label.ForeColor = switch ($b.State) {
-                'Ok'   { $C.Ok }
-                'Fail' { $C.Err }
-                default { $C.Dim }
-            }
+            $label.ForeColor = Get-StatusColor $b.State
         }
     }
 }
