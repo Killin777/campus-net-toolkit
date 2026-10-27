@@ -368,7 +368,82 @@ $header.SetCellPosition($bSettings,(New-Object Windows.Forms.TableLayoutPanelCel
 $pages = New-Object Windows.Forms.TabControl
 $pages.Dock = 'Fill'
 $pages.Padding = New-Object Drawing.Point(16,9)
-$rootLayout.Controls.Add($pages,0,1)
+    # ---- macOS 风格：左侧导航 + 右侧内容（隐藏原生 Tab 头） ----
+    $shell = New-Object Windows.Forms.TableLayoutPanel
+    $shell.Dock = 'Fill'
+    $shell.ColumnCount = 2
+    $shell.RowCount = 1
+    [void]$shell.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',172)))
+    [void]$shell.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+    $rootLayout.Controls.Add($shell,0,1)
+
+    $nav = New-Object Windows.Forms.FlowLayoutPanel
+    $nav.Dock = 'Fill'
+    $nav.FlowDirection = 'TopDown'
+    $nav.WrapContents = $false
+    $nav.BackColor = $C.Bg
+    $nav.Padding = New-Object Windows.Forms.Padding(0,4,12,0)
+    $shell.Controls.Add($nav,0,0)
+
+    $pages.Appearance = 'FlatButtons'
+    $pages.ItemSize = New-Object System.Drawing.Size(0,1)
+    $pages.SizeMode = 'Fixed'
+    $shell.Controls.Add($pages,1,0)
+    $pages.Padding = New-Object System.Drawing.Point(0,0)
+    $pages.Add_Resize({ try { $pages.Region = New-Object System.Drawing.Region((New-Object System.Drawing.Rectangle(1,1,[Math]::Max(1,$pages.Width-2),[Math]::Max(1,$pages.Height-2)))) } catch { } })
+
+    $script:navItems = @()
+    $script:navNames = @('当前网络','检测详情','各项修复','更多工具')
+    for ($ni = 0; $ni -lt 4; $ni++) {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = $script:navNames[$ni]
+        $b.Tag = $ni
+        $b.Width = 160
+        $b.Height = 40
+        $b.Margin = New-Object Windows.Forms.Padding(0,0,0,4)
+        $b.FlatStyle = 'Flat'
+        $b.FlatAppearance.BorderSize = 0
+        $b.TextAlign = 'MiddleLeft'
+        $b.Padding = New-Object Windows.Forms.Padding(14,0,0,0)
+        $b.BackColor = $C.Bg
+        $b.ForeColor = $C.Dim
+        $b.Cursor = 'Hand'
+        $b.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
+        $nav.Controls.Add($b)
+        $script:navItems += $b
+    }
+
+    $script:navIndex = 0
+    $script:UpdateNav = {
+        for ($k = 0; $k -lt $script:navItems.Count; $k++) {
+            $item = $script:navItems[$k]
+            if ($k -eq $script:navIndex) {
+                $item.BackColor = $C.Card; $item.ForeColor = $C.Text
+                $item.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
+            } else {
+                $item.BackColor = $C.Bg; $item.ForeColor = $C.Dim
+                $item.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
+            }
+            # 圆角 6px：用 Region 裁切，避免自绘
+            try {
+                $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+                $r = 6; $w = $item.Width; $h = $item.Height
+                $path.AddArc(0,0,$r*2,$r*2,180,90); $path.AddArc($w-$r*2,0,$r*2,$r*2,270,90)
+                $path.AddArc($w-$r*2,$h-$r*2,$r*2,$r*2,0,90); $path.AddArc(0,$h-$r*2,$r*2,$r*2,90,90)
+                $path.CloseFigure()
+                $item.Region = New-Object System.Drawing.Region($path)
+                $path.Dispose()
+            } catch { }
+        }
+    }
+    foreach ($item in $script:navItems) {
+        $item.Add_Click({
+            $script:navIndex = [int]$this.Tag
+            $pages.SelectedIndex = $script:navIndex
+            & $script:UpdateNav
+        })
+    }
+    & $script:UpdateNav
 $homePage = New-Object Windows.Forms.TabPage('当前网络')
 $detailsPage = New-Object Windows.Forms.TabPage('检测详情')
 $repairsPage = New-Object Windows.Forms.TabPage('逐项修复')
