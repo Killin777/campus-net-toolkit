@@ -1698,12 +1698,15 @@ function Test-NetworkQuality {
 }
 
 function Get-StatusColor([string]$State) {
-    # 永远返回一个有效 Color：查表命中就用，否则退回正文色
-    if ($State -eq 'Ok') { return $C.Ok }
-    if ($State -eq 'Degraded' -or $State -eq 'Warn') { return $C.Warn }
-    if ($State -eq 'NeedsAuth') { return $C.Warn }
-    if ($State -eq 'Fail' -or $State -eq 'Down' -or $State -eq 'Error') { return $C.Err }
-    return $C.Text
+    $fallback = [System.Drawing.Color]::FromArgb(0xE5, 0xE7, 0xEB)
+    $pick = $null
+    if ($State -eq 'Ok') { $pick = $C.Ok }
+    elseif ($State -eq 'Degraded' -or $State -eq 'Warn') { $pick = $C.Warn }
+    elseif ($State -eq 'NeedsAuth') { $pick = $C.Warn }
+    elseif ($State -eq 'Fail' -or $State -eq 'Down' -or $State -eq 'Error') { $pick = $C.Err }
+    elseif ($State -eq 'Ok' -or $State -eq 'Unknown') { $pick = $C.Text }
+    if ($pick -is [System.Drawing.Color]) { return $pick }
+    return $fallback   # 任何情况下都返回有效颜色
 }
 
 function Update-NetworkMonitorUi {
@@ -1836,7 +1839,7 @@ function Update-LayerUi {
 
     if ($lbConclusion) {
         $lbConclusion.Text = $c.Title
-        $lbConclusion.ForeColor = Get-StatusColor $c.Severity
+        try { $lbConclusion.ForeColor = Get-StatusColor $c.Severity } catch { }
     }
     if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
     if ($script:badgeLabels) {
@@ -1844,7 +1847,7 @@ function Update-LayerUi {
             $label = $script:badgeLabels[$b.Key]
             if (-not $label) { continue }
             $label.Text = ([string]$b.Mark) + ' ' + $b.Key
-            $label.ForeColor = Get-StatusColor $b.State
+            try { $label.ForeColor = Get-StatusColor $b.State } catch { }
         }
     }
 }
