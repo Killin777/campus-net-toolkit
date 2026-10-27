@@ -118,7 +118,8 @@
 # 测试与验证
 
 - 全部测试：powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-all.ps1
-- 8 个套件：语法(5.1) 语法(7) 编码(BOM/GBK) 协议识别 产品逻辑 诊断边界 启动权限与升级 发布包隔离
+- 13 个套件：语法(5.1) 语法(7) 编码(BOM/GBK) 格式规范 协议识别 产品逻辑 诊断边界
+  后台监测 路由修复 流程回归 分层结论 启动权限与升级 发布包隔离
 - 界面截图开关：-Screenshot / -Help / -Settings / -Timeline，各自 -Out <png>
 - 自测开关：-AutoClose（1.2 秒后自动关窗，用于验证关闭后进程退出）
 - 已知限制：不能用外部进程给提权窗口发 WM_CLOSE 或 taskkill（UIPI 会拦截），要用程序自带的开关验证
@@ -158,7 +159,7 @@
 1. `VERSION` 改成新版本号（如 `1.3.1`）
 2. `CHANGELOG.md` 增加对应段落，只写使用者能感知的变化
 3. `tools\Build.ps1` 重建
-4. `tests\run-all.ps1` 必须全绿（9 个套件）
+4. `tests\run-all.ps1` 必须全绿（13 个套件）
 5. 提交，按「一个改动一个提交」拆开：
    - `chore: bump 1.3.1`（VERSION）
    - `docs: 更新 1.3.1 变更记录`（CHANGELOG）

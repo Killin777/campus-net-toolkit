@@ -35,7 +35,7 @@ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($path,
 # 2. 重建
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\Build.ps1
 
-# 3. 全量测试（8 个套件，必须全绿）
+# 3. 全量测试（13 个套件，必须全绿）
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-all.ps1
 
 # 4. 界面改动必须出图，并且真的看图
