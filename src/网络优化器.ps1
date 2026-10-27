@@ -25,6 +25,7 @@ param(
     [ValidateSet('','Online','NeedsAuth','ProxyIssue','Offline','ExternalFailure','Unknown')]
     [string]$PreviewScenario = '',
     [switch]$Settings,
+    [switch]$EndpointEditor,
     [switch]$Help,
     [switch]$DnsList,
     [switch]$WifiList,
@@ -548,11 +549,12 @@ function New-DetailSection {
     $section.AutoSize = $true
     $section.AutoSizeMode = 'GrowAndShrink'
     $section.ColumnCount = 2
-    $section.RowCount = 3
+    $section.RowCount = 4
     [void]$section.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
     [void]$section.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',64)))
     [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',24)))
     [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',20)))
+    [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
     [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
     $section.Margin = New-Object Windows.Forms.Padding(0)
     $titleLabel = New-Object Windows.Forms.Label
@@ -580,6 +582,15 @@ function New-DetailSection {
     $evidenceLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
     $section.SetColumnSpan($evidenceLabel,2)
     $section.Controls.Add($evidenceLabel,0,1)
+    $endpointLabel = New-Object Windows.Forms.Label
+    $endpointLabel.AutoSize = $true
+    $endpointLabel.MaximumSize = New-Object Drawing.Size([Math]::Max(320, $detailScroll.ClientSize.Width - 24), 0)
+    $endpointLabel.Margin = New-Object Windows.Forms.Padding(0,4,0,0)
+    $endpointLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
+    $endpointLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    $endpointLabel.Visible = $false
+    $section.SetColumnSpan($endpointLabel,2)
+    $section.Controls.Add($endpointLabel,0,2)
     $suggestLabel = New-Object Windows.Forms.Label
     $suggestLabel.AutoSize = $false
     $suggestLabel.Dock = 'Fill'
@@ -590,10 +601,25 @@ function New-DetailSection {
     $suggestLabel.ForeColor = [System.Drawing.Color]::FromArgb(0xFB,0xBF,0x24)
     $suggestLabel.Visible = $false
     $section.SetColumnSpan($suggestLabel,2)
-    $section.Controls.Add($suggestLabel,0,2)
+    $section.Controls.Add($suggestLabel,0,3)
     [void]$Parent.Controls.Add($section)
+    $expandable = ($Key -eq 'Domestic' -or $Key -eq 'Intl')
+    if ($expandable) {
+        $titleLabel.Cursor = 'Hand'
+        $titleLabel.Add_MouseEnter({ $item = $script:detailSections[$Key]; if ($item) { $item.Hover = $true; Update-DetailSectionHeader $Key } })
+        $titleLabel.Add_MouseLeave({ $item = $script:detailSections[$Key]; if ($item) { $item.Hover = $false; Update-DetailSectionHeader $Key } })
+        $titleLabel.Add_Click({
+            $item = $script:detailSections[$Key]
+            if (-not $item) { return }
+            $item.Expanded = -not $item.Expanded
+            $item.Endpoints.Visible = $item.Expanded
+            Update-DetailSectionHeader $Key
+        })
+    }
     $script:detailSections[$Key] = [pscustomobject]@{
-        Title = $titleLabel; Time = $timeLabel; Evidence = $evidenceLabel; Suggest = $suggestLabel; Caption = $Title
+        Title = $titleLabel; Time = $timeLabel; Evidence = $evidenceLabel; Suggest = $suggestLabel
+        Endpoints = $endpointLabel; Caption = $Title; Mark = ''
+        Expandable = $expandable; Expanded = $false; Hover = $false
     }
 }
 
@@ -630,7 +656,8 @@ function Set-DetailSection {
         $mark = [string][char]0x2014
         $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175)
     }
-    $entry.Title.Text = $mark + ' ' + $entry.Caption
+    $entry.Mark = $mark
+    Update-DetailSectionHeader $Key
     $entry.Time.Text = $At
     $entry.Evidence.Text = $Evidence
     if ($Suggest) {
@@ -641,6 +668,46 @@ function Set-DetailSection {
         $entry.Suggest.Visible = $false
     }
 }
+
+function Update-DetailSectionHeader {
+    param([string]$Key)
+    $entry = $script:detailSections[$Key]
+    if (-not $entry) { return }
+    $mark = if ($entry.Mark) { $entry.Mark } else { [string][char]0x2014 }
+    $suffix = ''
+    if ($entry.Expandable) {
+        if ($entry.Expanded) { $suffix = '  ' + [string][char]0x25B4 }
+        elseif ($entry.Hover) { $suffix = '  ' + [string][char]0x25BE }
+    }
+    $entry.Title.Text = $mark + ' ' + $entry.Caption + $suffix
+}
+
+function Set-DetailEndpoints {
+    param([string]$Key,$Endpoints)
+    $entry = $script:detailSections[$Key]
+    if (-not $entry -or -not $entry.Expandable) { return }
+    $lines = @()
+    foreach ($endpoint in @($Endpoints)) {
+        if (-not $endpoint) { continue }
+        $mark = if ($endpoint.Ok) { [string][char]0x221A } else { [string][char]0x00D7 }
+        $status = ''
+        if ($endpoint.Ok) {
+            if ([int]$endpoint.Ms -ge 0) { $status = '  ' + [string]$endpoint.Ms + 'ms' }
+        } else {
+            $status = '  未通过'
+        }
+        $lines += ($mark + ' ' + [string]$endpoint.Name + $status + "`r`n    " + [string]$endpoint.Url)
+    }
+    if ($lines.Count -eq 0) { $lines = @('还没有端点结果') }
+    $entry.Endpoints.Text = ($lines -join "`r`n")
+}
+
+$detailScroll.Add_Resize({
+    $wrapWidth = [Math]::Max(320, $detailScroll.ClientSize.Width - 24)
+    foreach ($entry in @($script:detailSections.Values)) {
+        if ($entry -and $entry.Endpoints) { $entry.Endpoints.MaximumSize = New-Object Drawing.Size($wrapWidth,0) }
+    }
+})
 
 $repairLayout = New-Object Windows.Forms.TableLayoutPanel
 $repairLayout.Dock = 'Fill'
@@ -2000,8 +2067,10 @@ function Update-DetailUi {
             if ($layer.At) { $layerAt = ([datetime]$layer.At).ToString('HH:mm:ss') }
             $layerSuggest = if ($layer.State -eq 'Fail') { $script:detailSuggest[$layerKey] } else { '' }
             Set-DetailSection $layerKey ([string]$layer.State) ([string]$layer.Detail) $layerAt $layerSuggest
+            Set-DetailEndpoints $layerKey $layer.Endpoints
         } else {
             Set-DetailSection $layerKey 'Unknown' '— 未验证'
+            Set-DetailEndpoints $layerKey @()
         }
     }
 
@@ -2633,6 +2702,145 @@ function Show-DnsListWindow {
     $w.Dispose()
 }
 
+function ConvertTo-EndpointList {
+    param([string]$Text)
+    $list = @()
+    foreach ($line in ($Text -split "`r?`n")) {
+        $value = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        $name = $value
+        $url = $value
+        $pipe = $value.IndexOf('|')
+        if ($pipe -ge 0) {
+            $name = $value.Substring(0,$pipe).Trim()
+            $url = $value.Substring($pipe + 1).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $url }
+        $uri = $null
+        if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or @('http','https') -notcontains $uri.Scheme) {
+            throw ('不是有效的 http/https 地址：' + $url)
+        }
+        $list += @{ name = $name; url = $url }
+    }
+    return $list
+}
+
+function Format-EndpointList {
+    param($List)
+    return ((@($List) | ForEach-Object { [string]$_.Name + '|' + [string]$_.Url }) -join "`r`n")
+}
+
+function Show-EndpointEditor {
+    $w = New-Object System.Windows.Forms.Form
+    $w.Icon = $form.Icon
+    $w.Text = '检测端点'
+    $w.Size = New-Object System.Drawing.Size(680, 560)
+    $w.StartPosition = 'CenterParent'
+    $w.FormBorderStyle = 'FixedDialog'
+    $w.MaximizeBox = $false
+    $w.MinimizeBox = $false
+    $w.BackColor = $C.Bg
+    $w.ForeColor = $C.Text
+    $w.Font = New-Object System.Drawing.Font('Microsoft YaHei UI',9)
+
+    $lHint = New-Object System.Windows.Forms.Label
+    $lHint.Text = '每行一个端点，格式：名称|URL。只支持 http/https；留空行忽略。保存后下一次分层探测生效。'
+    $lHint.ForeColor = $C.Dim
+    $lHint.Location = New-Object System.Drawing.Point(16, 14)
+    $lHint.Size = New-Object System.Drawing.Size(640, 20)
+    $w.Controls.Add($lHint)
+
+    $lDom = New-Object System.Windows.Forms.Label
+    $lDom.Text = '国内端点'
+    $lDom.ForeColor = $C.Text
+    $lDom.Location = New-Object System.Drawing.Point(16, 44)
+    $lDom.Size = New-Object System.Drawing.Size(200, 20)
+    $w.Controls.Add($lDom)
+    $tbDom = New-Object System.Windows.Forms.TextBox
+    $tbDom.Multiline = $true
+    $tbDom.ScrollBars = 'Vertical'
+    $tbDom.AcceptsReturn = $true
+    $tbDom.Location = New-Object System.Drawing.Point(16, 66)
+    $tbDom.Size = New-Object System.Drawing.Size(632, 170)
+    $tbDom.BackColor = $C.Card
+    $tbDom.ForeColor = $C.Text
+    $tbDom.BorderStyle = 'FixedSingle'
+    $tbDom.Font = New-Object System.Drawing.Font('Consolas',10)
+    $tbDom.Text = Format-EndpointList (Get-ProbeEndpoints -Layer Domestic)
+    $w.Controls.Add($tbDom)
+
+    $lIntl = New-Object System.Windows.Forms.Label
+    $lIntl.Text = '国际端点'
+    $lIntl.ForeColor = $C.Text
+    $lIntl.Location = New-Object System.Drawing.Point(16, 246)
+    $lIntl.Size = New-Object System.Drawing.Size(200, 20)
+    $w.Controls.Add($lIntl)
+    $tbIntl = New-Object System.Windows.Forms.TextBox
+    $tbIntl.Multiline = $true
+    $tbIntl.ScrollBars = 'Vertical'
+    $tbIntl.AcceptsReturn = $true
+    $tbIntl.Location = New-Object System.Drawing.Point(16, 268)
+    $tbIntl.Size = New-Object System.Drawing.Size(632, 170)
+    $tbIntl.BackColor = $C.Card
+    $tbIntl.ForeColor = $C.Text
+    $tbIntl.BorderStyle = 'FixedSingle'
+    $tbIntl.Font = New-Object System.Drawing.Font('Consolas',10)
+    $tbIntl.Text = Format-EndpointList (Get-ProbeEndpoints -Layer Intl)
+    $w.Controls.Add($tbIntl)
+
+    $btnReset = New-DialogButton $w '恢复默认' 16 460 110
+    $btnSave = New-DialogButton $w '保存' 430 460 100
+    $btnSave.BackColor = $C.Accent
+    $btnSave.Tag = $C.Accent
+    $btnCancel = New-DialogButton $w '取消' 540 460 100
+
+    $btnReset.Add_Click({
+        $tbDom.Text = Format-EndpointList (Get-DefaultProbeEndpoints -Layer Domestic)
+        $tbIntl.Text = Format-EndpointList (Get-DefaultProbeEndpoints -Layer Intl)
+    })
+    $btnCancel.Add_Click({ $w.DialogResult = 'Cancel'; $w.Close() })
+    $btnSave.Add_Click({
+        try {
+            $domList = @(ConvertTo-EndpointList $tbDom.Text)
+            $intlList = @(ConvertTo-EndpointList $tbIntl.Text)
+            if ($domList.Count -eq 0 -or $intlList.Count -eq 0) { throw '国内与国际至少要各保留一个端点' }
+            if ($domList.Count -gt 8 -or $intlList.Count -gt 8) { throw '每层最多 8 个端点' }
+            $path = Join-Path $script:DataRoot 'config\probe-endpoints.json'
+            $doc = [ordered]@{ Domestic = @($domList); Intl = @($intlList) }
+            Save-ToolkitJson $doc $path
+            $script:layerAt = [datetime]::MinValue
+            Write-Log ('检测端点已保存：国内 ' + [string]$domList.Count + ' 个，国际 ' + [string]$intlList.Count + ' 个') 'ok'
+            $w.DialogResult = 'OK'
+            $w.Close()
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, '检测端点', 'OK', 'Warning') | Out-Null
+        }
+    })
+    if ($script:captureEndpoints) {
+        if (-not ('W2.Gdi' -as [type])) {
+            Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);'
+        }
+        $w.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 500
+        [System.Windows.Forms.Application]::DoEvents()
+        $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
+        $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+        $hdc = $gfx.GetHdc()
+        $ok = [W2.Gdi]::PrintWindow($w.Handle, $hdc, 2)
+        $gfx.ReleaseHdc($hdc)
+        $gfx.Dispose()
+        if (-not $ok) { $w.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $w.Width, $w.Height))) }
+        $bmp.Save($script:capturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bmp.Dispose()
+        $w.Close()
+        $w.Dispose()
+        Write-Host "已保存: $($script:capturePath) (PrintWindow=$ok)"
+        return
+    }
+    [void]$w.ShowDialog()
+}
+
 function Show-SettingsWindow {
     $cfgFile = Join-Path $script:DataRoot 'runtime\proxy-settings.json'
     $curExe = ''
@@ -2763,6 +2971,8 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $btnCancel = New-DialogButton $w '取消' 540 380 96
 
     $btnPrivilege = New-DialogButton $w '启动权限…' 18 380 130
+    $btnEndpoints = New-DialogButton $w '检测端点…' 170 380 130
+    $btnEndpoints.Add_Click({ Show-EndpointEditor })
     $btnPrivilege.Add_Click({
         if ($env:CAMPUS_NET_LAUNCHER -and (Test-Path -LiteralPath $env:CAMPUS_NET_LAUNCHER)) {
             Start-Process -FilePath $env:CAMPUS_NET_LAUNCHER -ArgumentList '--startup-settings' | Out-Null
@@ -3492,8 +3702,15 @@ function New-PreviewState {
     if ($Scenario -eq 'ExternalFailure') { $intlState = 'Fail' }
     $script:layerCache = [pscustomobject]@{
         Dns = New-LayerState -State $dnsState -Detail $(if ($dnsState -eq 'Ok') { '国内外域名均可解析' } else { '域名解析失败' }) -At $now
-        Domestic = New-LayerState -State $domState -Detail $(if ($domState -eq 'Fail') { '国内 2/3 通过（腾讯 失败）' } else { '国内 3/3 通过' }) -At $now -Passed 3 -Total 3
-        Intl = New-LayerState -State $intlState -Detail $(if ($intlState -eq 'Fail') { '国际探测点不可达' } else { 'cloudflare trace 可达' }) -At $now
+        Domestic = New-LayerState -State $domState -Detail $(if ($domState -eq 'Fail') { '国内 2/3 通过（腾讯 失败）' } else { '国内 3/3 通过' }) -At $now -Passed 3 -Total 3 -Endpoints @(
+            [pscustomobject]@{ Name='小米'; Url='http://connect.rom.miui.com/generate_204'; Ok=$true; Ms=12 }
+            [pscustomobject]@{ Name='百度'; Url='https://www.baidu.com'; Ok=$true; Ms=15 }
+            [pscustomobject]@{ Name='腾讯'; Url='http://www.qq.com'; Ok=($domState -ne 'Fail'); Ms=$(if ($domState -eq 'Fail') { -1 } else { 18 }) }
+        )
+        Intl = New-LayerState -State $intlState -Detail $(if ($intlState -eq 'Fail') { '国际探测点全部失败' } else { '国际 2/2 通过' }) -At $now -Endpoints @(
+            [pscustomobject]@{ Name='cloudflare'; Url='https://www.cloudflare.com/cdn-cgi/trace'; Ok=($intlState -eq 'Ok'); Ms=$(if ($intlState -eq 'Ok') { 210 } else { -1 }) }
+            [pscustomobject]@{ Name='google'; Url='https://www.google.com/generate_204'; Ok=($intlState -eq 'Ok'); Ms=$(if ($intlState -eq 'Ok') { 305 } else { -1 }) }
+        )
         At = $now
     }
 }
@@ -3531,6 +3748,12 @@ if ($Screenshot) {
     Update-Status | Out-Null
     if ($PreviewScenario) { Update-LayerUi }
     Update-DetailUi
+    if ($PreviewScenario -and $Details) {
+        # 出图时展开国际段，方便核对端点列表
+        $script:detailSections['Intl'].Expanded = $true
+        $script:detailSections['Intl'].Endpoints.Visible = $true
+        Update-DetailSectionHeader 'Intl'
+    }
     Write-Log '界面预览' 'dim'
     Write-Log '示例日志行' 'ok'
     Start-Sleep -Milliseconds 700
@@ -3576,6 +3799,13 @@ if ($DnsList) {
     $script:captureDnsList = $true
     $script:capturePath = $Out
     Show-DnsListWindow
+    return
+}
+
+if ($EndpointEditor) {
+    $script:captureEndpoints = $true
+    $script:capturePath = $Out
+    Show-EndpointEditor
     return
 }
 

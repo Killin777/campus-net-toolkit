@@ -19,9 +19,10 @@ function New-LayerState {
         [string]$Detail = '',
         [datetime]$At = (Get-Date),
         [int]$Passed = 0,
-        [int]$Total = 0
+        [int]$Total = 0,
+        [object[]]$Endpoints = @()
     )
-    [pscustomobject]@{ State = $State; Detail = $Detail; At = $At; Passed = $Passed; Total = $Total }
+    [pscustomobject]@{ State = $State; Detail = $Detail; At = $At; Passed = $Passed; Total = $Total; Endpoints = @($Endpoints) }
 }
 
 function Get-BadgeMark([string]$State) {

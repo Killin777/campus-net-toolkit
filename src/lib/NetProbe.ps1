@@ -54,19 +54,23 @@ function Invoke-ProbeRequest {
     }
 }
 
-function Get-ProbeEndpoints {
+function Get-DefaultProbeEndpoints {
     param([ValidateSet('Domestic','Intl')][string]$Layer)
-    $defaults = @{
-        Domestic = @(
-            @{ Name = '小米'; Url = 'http://connect.rom.miui.com/generate_204' }
-            @{ Name = '百度'; Url = 'https://www.baidu.com' }
-            @{ Name = '腾讯'; Url = 'http://www.qq.com' }
-        )
-        Intl = @(
+    if ($Layer -eq 'Intl') {
+        return @(
             @{ Name = 'cloudflare'; Url = 'https://www.cloudflare.com/cdn-cgi/trace' }
             @{ Name = 'google'; Url = 'https://www.google.com/generate_204' }
         )
     }
+    return @(
+        @{ Name = '小米'; Url = 'http://connect.rom.miui.com/generate_204' }
+        @{ Name = '百度'; Url = 'https://www.baidu.com' }
+        @{ Name = '腾讯'; Url = 'http://www.qq.com' }
+    )
+}
+
+function Get-ProbeEndpoints {
+    param([ValidateSet('Domestic','Intl')][string]$Layer)
     $root = if ($script:DataRoot) { $script:DataRoot } else { Join-Path $env:LOCALAPPDATA 'CampusNetToolkit' }
     $path = Join-Path $root 'config\probe-endpoints.json'
     if (Test-Path -LiteralPath $path) {
@@ -82,7 +86,7 @@ function Get-ProbeEndpoints {
             if ($out.Count -gt 0) { return $out }
         } catch { }
     }
-    return $defaults[$Layer]
+    return (Get-DefaultProbeEndpoints -Layer $Layer)
 }
 
 function Get-LayerProbes {
@@ -102,46 +106,64 @@ function Get-LayerProbes {
                  elseif ($dnsCn) { '国内可解析；境外域名解析失败（可能被污染）' }
                  else { '域名解析失败' }
 
-    # ---- L2 国内出口：三个端点，各采 2 次 ----
+    # ---- L2 国内出口：每个端点各采 2 次，记录每个链接的结果 ----
     $domesticPoints = @(Get-ProbeEndpoints -Layer Domestic)
     $domPassed = 0
     $domTotal = 0
     $domFailures = @()
+    $domResults = @()
     foreach ($point in $domesticPoints) {
         $samples = @()
-        for ($i = 0; $i -lt 2; $i++) { $samples += (Invoke-ProbeRequest -Url $point.Url -TimeoutMs $TimeoutMs) }
+        $lastMs = -1
+        for ($i = 0; $i -lt 2; $i++) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $ok = Invoke-ProbeRequest -Url $point.Url -TimeoutMs $TimeoutMs
+            $sw.Stop()
+            $samples += $ok
+            if ($ok) { $lastMs = [int]$sw.ElapsedMilliseconds }
+        }
         $domTotal++
-        if ((Resolve-ProbeMajority -Samples $samples) -eq 'Ok') { $domPassed++ } else { $domFailures += $point.Name }
+        $pointOk = ((Resolve-ProbeMajority -Samples $samples) -eq 'Ok')
+        $domResults += [pscustomobject]@{ Name = [string]$point.Name; Url = [string]$point.Url; Ok = $pointOk; Ms = $lastMs }
+        if ($pointOk) { $domPassed++ } else { $domFailures += $point.Name }
     }
     $domState = if ($domPassed -eq 0) { 'Fail' } elseif ($domPassed -eq $domTotal) { 'Ok' } else { 'Ok' }
     $domDetail = if ($domPassed -eq $domTotal) { "国内 $domTotal/$domTotal 通过" }
                  elseif ($domPassed -gt 0) { "国内 $domPassed/$domTotal 通过（$($domFailures -join '、') 失败）" }
                  else { '国内探测点全部失败' }
 
-    # ---- L3 国际出口：cloudflare trace 为主，google 204 为备 ----
-    $intlSamples = @()
-    $intlDetail = ''
-    $traceOk = $false
-    for ($i = 0; $i -lt 2; $i++) {
-        $ok = Invoke-ProbeRequest -Url 'https://www.cloudflare.com/cdn-cgi/trace' -TimeoutMs $TimeoutMs -ExpectBody @('ip=', 'loc=')
-        if ($ok) { $traceOk = $true }
-        $intlSamples += $ok
-    }
-    if (-not $traceOk) {
+    # ---- L3 国际出口：用配置里的端点逐个测，cloudflare trace 仍校验正文 ----
+    $intlPoints = @(Get-ProbeEndpoints -Layer Intl)
+    $intlResults = @()
+    foreach ($point in $intlPoints) {
+        $expect = @()
+        if ($point.Url -match 'cloudflare\.com/cdn-cgi/trace') { $expect = @('ip=', 'loc=') }
+        $samples = @()
+        $lastMs = -1
         for ($i = 0; $i -lt 2; $i++) {
-            $intlSamples += (Invoke-ProbeRequest -Url 'https://www.google.com/generate_204' -TimeoutMs $TimeoutMs)
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $ok = Invoke-ProbeRequest -Url $point.Url -TimeoutMs $TimeoutMs -ExpectBody $expect
+            $sw.Stop()
+            $samples += $ok
+            if ($ok) { $lastMs = [int]$sw.ElapsedMilliseconds }
         }
-        $intlDetail = if ((Resolve-ProbeMajority -Samples $intlSamples) -eq 'Ok') { 'cloudflare 不可达，google 可达' } else { '国际探测点不可达' }
-    } else {
-        $intlDetail = 'cloudflare trace 可达'
+        $pointOk = ((Resolve-ProbeMajority -Samples $samples) -eq 'Ok')
+        $intlResults += [pscustomobject]@{ Name = [string]$point.Name; Url = [string]$point.Url; Ok = $pointOk; Ms = $lastMs }
     }
-    $intlState = Resolve-ProbeMajority -Samples $intlSamples
+    $intlTotal = $intlResults.Count
+    $intlPassed = @($intlResults | Where-Object { $_.Ok }).Count
+    $intlFailures = @($intlResults | Where-Object { -not $_.Ok } | ForEach-Object { $_.Name })
+    $intlState = if ($intlTotal -eq 0) { 'Unknown' } elseif ($intlPassed -eq 0) { 'Fail' } else { 'Ok' }
+    $intlDetail = if ($intlTotal -eq 0) { '没有配置国际探测点' }
+                  elseif ($intlPassed -eq $intlTotal) { "国际 $intlPassed/$intlTotal 通过" }
+                  elseif ($intlPassed -gt 0) { "国际 $intlPassed/$intlTotal 通过（$($intlFailures -join '、') 失败）" }
+                  else { '国际探测点全部失败' }
 
     [pscustomobject]@{
         Link     = $null    # 链路来自 NetworkMonitor，不在这里重复测
         Dns      = New-LayerState -State $dnsState -Detail $dnsDetail -At $now
-        Domestic = New-LayerState -State $domState -Detail $domDetail -At $now -Passed $domPassed -Total $domTotal
-        Intl     = New-LayerState -State $intlState -Detail $intlDetail -At $now
+        Domestic = New-LayerState -State $domState -Detail $domDetail -At $now -Passed $domPassed -Total $domTotal -Endpoints $domResults
+        Intl     = New-LayerState -State $intlState -Detail $intlDetail -At $now -Passed $intlPassed -Total $intlTotal -Endpoints $intlResults
         At       = $now
     }
 }
