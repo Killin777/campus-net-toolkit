@@ -54,6 +54,37 @@ function Invoke-ProbeRequest {
     }
 }
 
+function Get-ProbeEndpoints {
+    param([ValidateSet('Domestic','Intl')][string]$Layer)
+    $defaults = @{
+        Domestic = @(
+            @{ Name = '小米'; Url = 'http://connect.rom.miui.com/generate_204' }
+            @{ Name = '百度'; Url = 'https://www.baidu.com' }
+            @{ Name = '腾讯'; Url = 'http://www.qq.com' }
+        )
+        Intl = @(
+            @{ Name = 'cloudflare'; Url = 'https://www.cloudflare.com/cdn-cgi/trace' }
+            @{ Name = 'google'; Url = 'https://www.google.com/generate_204' }
+        )
+    }
+    $root = if ($script:DataRoot) { $script:DataRoot } else { Join-Path $env:LOCALAPPDATA 'CampusNetToolkit' }
+    $path = Join-Path $root 'config\probe-endpoints.json'
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $list = @($doc.$Layer)
+            $out = @()
+            foreach ($item in $list) {
+                if (-not $item -or -not $item.url) { continue }
+                $name = if ($item.name) { [string]$item.name } else { [string]$item.url }
+                $out += @{ Name = $name; Url = [string]$item.url }
+            }
+            if ($out.Count -gt 0) { return $out }
+        } catch { }
+    }
+    return $defaults[$Layer]
+}
+
 function Get-LayerProbes {
     param(
         [hashtable]$Counters = @{},
@@ -72,11 +103,7 @@ function Get-LayerProbes {
                  else { '域名解析失败' }
 
     # ---- L2 国内出口：三个端点，各采 2 次 ----
-    $domesticPoints = @(
-        @{ Name = '小米'; Url = 'http://connect.rom.miui.com/generate_204' },
-        @{ Name = '百度'; Url = 'https://www.baidu.com' },
-        @{ Name = '腾讯'; Url = 'http://www.qq.com' }
-    )
+    $domesticPoints = @(Get-ProbeEndpoints -Layer Domestic)
     $domPassed = 0
     $domTotal = 0
     $domFailures = @()
