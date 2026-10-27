@@ -224,6 +224,32 @@ Test-Case '崩溃报告包含版本、异常类型和消息' {
     $record = New-Object System.Management.Automation.ErrorRecord($exception,'test','NotSpecified',$null)
     Assert-True ((Format-CrashReport $record) -match '模拟崩溃') 'ErrorRecord 没有被拆出异常'
 }
+Test-Case '开启代理时先确认关闭，确认后关闭并打开登录页' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' }; Info=[pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true }; Quality=[pscustomobject]@{ Known=$true; Kind='NeedsAuth' } }
+    $script:confirmAsked = $false; $script:proxyClosed = $false; $script:browserOpened = $false
+    function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
+    function Confirm-Prompt { $script:confirmAsked = $true; return $true }
+    function Set-ProxyState { param([bool]$Enable) if (-not $Enable) { $script:proxyClosed = $true } }
+    function Get-NetInfo { [pscustomobject]@{ ProxyOn=$false; PacUrl='' } }
+    function Start-Process { $script:browserOpened = $true }
+    function Write-Log { }
+    Open-CampusLogin
+    Assert-True ($script:confirmAsked -and $script:proxyClosed -and $script:browserOpened) '开启代理时没有先确认关闭'
+}
+Test-Case '选择不关闭代理时仍然打开登录页' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' }; Info=[pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true }; Quality=[pscustomobject]@{ Known=$true; Kind='NeedsAuth' } }
+    $script:proxyClosed = $false; $script:browserOpened = $false
+    function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
+    function Confirm-Prompt { return $false }
+    function Set-ProxyState { param([bool]$Enable) $script:proxyClosed = $true }
+    function Get-NetInfo { [pscustomobject]@{ ProxyOn=$true; PacUrl='' } }
+    function Start-Process { $script:browserOpened = $true }
+    function Write-Log { }
+    Open-CampusLogin
+    Assert-True ($script:browserOpened -and -not $script:proxyClosed) '拒绝关闭后没有打开登录页或仍然改了代理'
+}
 Write-Host ("产品回归：{0} 项，{1} 个失败" -f $script:total, $script:fail)
 if ($script:fail) { exit 1 }
 exit 0

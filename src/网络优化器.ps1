@@ -1724,6 +1724,15 @@ function Request-StatusRefresh {
     } catch { }
 }
 
+function Confirm-Prompt {
+    param([string]$Text,[string]$Title)
+    try {
+        return ([Windows.Forms.MessageBox]::Show($Text, $Title, 'YesNo', 'Question') -eq 'Yes')
+    } catch {
+        return $false
+    }
+}
+
 function Open-CampusLogin {
     $snapshot = $script:lastSnapshot
     if (-not $snapshot) {
@@ -1753,7 +1762,25 @@ function Open-CampusLogin {
         return
     }
     if ($snapshot.Info.ProxyOn) {
-        Write-Log '手动系统代理处于开启状态。如认证页无法访问，可在「逐项处理」中查看并选择关闭；此处只打开浏览器。' 'warn'
+        # 认证页在校内网段，手动系统代理开着通常打不开：先确认是否关闭
+        if (Confirm-Prompt '检测到手动系统代理已开启。校园认证页通常只能在校内直连下打开，是否先关闭手动系统代理，再打开登录页？' '校园网登录') {
+            try {
+                Set-ProxyState -Enable $false
+                Start-Sleep -Milliseconds 400
+                $afterProxy = Get-NetInfo
+                if ($afterProxy.ProxyOn) {
+                    Write-Log '关闭手动系统代理未生效，已停止打开登录页；请先在「系统代理 ▾」里确认。' 'err'
+                    return
+                }
+                Write-Log '已关闭手动系统代理，正在打开登录页；登录完成后可在「系统代理 ▾」里重新开启。' 'ok'
+                if ($afterProxy.PacUrl) { Write-Log ('另有 PAC 自动代理：' + $afterProxy.PacUrl + '；如果认证页仍打不开，需要一并检查。') 'warn' }
+            } catch {
+                Write-Log ('关闭手动系统代理失败：' + $_.Exception.Message + '；已停止打开登录页。') 'err'
+                return
+            }
+        } else {
+            Write-Log '保持系统代理开启；如果登录页打不开，可在「系统代理 ▾」里关闭后再试。' 'warn'
+        }
     }
     try {
         Start-Process $portalUri.AbsoluteUri
