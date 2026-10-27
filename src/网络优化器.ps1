@@ -2810,6 +2810,17 @@ $bCheck.Add_Click({ Invoke-Check })
     })
     $bRefresh.Add_Click({ try { Request-NetworkMonitorRefresh -Monitor $script:monitor } catch { } })
     $bDetails.Add_Click({ if ($pages) { $pages.SelectedTab = $detailsPage } })
+
+    # 有线检查：复用最近一次后台快照，点击时不重新探测
+    $bWiredHome.Add_Click({
+        if (-not $script:lastSnapshot) { Write-Log '还没有网络快照，先点「重新检测」。' 'warn'; return }
+        try {
+            $report = Get-WiredConnectionReport -Snapshot $script:lastSnapshot
+            foreach ($line in @($report.Lines)) { Write-Log ('  ' + $line) 'dim' }
+            if (-not $report.Applicable) { Write-Log '当前出口不是有线以太网，报告仅作说明。' 'warn' }
+            elseif ($report.StatisticsKnown) { Write-Log '有线统计已读取。' 'ok' }
+        } catch { Write-Log ('有线检查失败：' + $_.Exception.Message) 'err' }
+    })
 $bOpt.Add_Click({ Invoke-CampusCheck })
 $bDns.Add_Click({ if (Test-AdminAccess) { Set-Busy $true; try { Invoke-DnsOptimize } catch { Write-Log $_.Exception.Message 'err' } finally { Set-Busy $false } } })
 $bLatency.Add_Click({ Invoke-LatencyTest })
