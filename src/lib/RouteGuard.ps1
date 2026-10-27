@@ -116,7 +116,7 @@ function Get-RouteGuardReport {
             $ipif = Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1
             if (-not $ipif) { throw '没有读取到 IPv4 接口配置' }
         } catch {
-            [void]$findings.Add((New-Finding 'virtual-metric' 'warn' ('接口「' + $adapter.Name + '」') ('无法读取接口跃点：' + $_.Exception.Message) '重新检测接口配置'))
+            [void]$findings.Add((New-Finding 'virtual-metric' 'warn' ('接口「' + $adapter.Name + '」') '无法读取该接口的 IPv4 跃点：系统里没有对应的 IP 接口配置（Hyper-V / WSL 的 vEthernet 常见）。该接口没有纳入本轮优先级比较。' '重新检测；如仍失败，可在「网络连接」里确认这个虚拟网卡是否还需要保留'))
             continue
         }
         $route = $routes | Where-Object { $_.IfIndex -eq $adapter.ifIndex } | Sort-Object Cost | Select-Object -First 1
