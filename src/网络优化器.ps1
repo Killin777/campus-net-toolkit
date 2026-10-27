@@ -1623,7 +1623,11 @@ function Update-NetworkMonitorUi {
         $script:lastConclusion = $c
 
         if ($lbConclusion) {
-            $lbConclusion.Text = [string]$c.Title
+            $headline = [string]$c.Title
+            if ($snap.Proxy) {
+                $headline += if ($snap.Proxy.Enabled) { "　·　系统代理已开启" } else { "　·　系统代理已关闭" }
+            }
+            $lbConclusion.Text = $headline
             $qColor = $C.Text
             switch ([string]$c.State) {
                 'Online'          { if ($C.Ok)   { $qColor = $C.Ok } }
