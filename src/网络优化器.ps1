@@ -1612,6 +1612,13 @@ function Update-NetworkMonitorUi {
         $snap = Receive-NetworkMonitorSnapshot -Monitor $script:monitor
         if (-not $snap) { return }
         $script:lastSnapshot = $snap
+
+        # 代理开关一变，结论就要立刻重算，否则会停留在切换前的「外网已验证」
+        $proxyNow = if ($snap.Proxy) { [bool]$snap.Proxy.Enabled } else { $false }
+        if ($null -ne $script:lastProxyEnabled -and $proxyNow -ne $script:lastProxyEnabled) {
+            try { Request-NetworkMonitorRefresh -Monitor $script:monitor -Full } catch { }
+        }
+        $script:lastProxyEnabled = $proxyNow
         $c = Resolve-NetworkConclusion -Snapshot $snap
         $script:lastConclusion = $c
 
