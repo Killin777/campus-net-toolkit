@@ -2,16 +2,9 @@
 <#
     src/lib/RouteGuard.ps1 — 路由守卫
 
-    回答一个问题：现在的网络配置里，有没有东西在偷偷抢流量、或者留下隐患？
-
-    三项核心检查：
-      1. 虚拟网卡抢占       metric 极低的 VPN/虚拟网卡 + 默认路由成本低于主链路
-      2. TUN 与系统代理双开  两份劫持同时生效，容易出现"部分网站打不开"
-      3. 代理端口对内网开放  监听非环回地址（含 0.0.0.0 / :: 和指定网卡地址）
-
-    另附两项一致性检查（与 ProxyCtl 互补）：
-      4. 代理残留           系统代理开着但端口已死
-      5. PAC 与手动代理并存  PAC 会接管解析，手动代理设置形同虚设
+    检查当前默认路由候选、系统代理端点和监听范围。
+    网卡名称只用作线索；配置并存不等于实际流量冲突。
+    结构化证据供独立的逐项修复模块使用，本模块不执行修复。
 
     纯只读，不修改任何配置。
 
@@ -37,13 +30,17 @@ if ([Console]::IsOutputRedirected) {
 $script:VirtualPattern = '(?i)vpn|virtual|tun|tap|wireguard|tailscale|radmin|zerotier|openvpn|mihomo|sing-?box|clash|wintun|vmware|hyper-v|loopback'
 
 function Get-WinInetState {
-    $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-    $p = Get-ItemProperty $k -ErrorAction SilentlyContinue
-    [pscustomobject]@{
-        Enabled  = ($p.ProxyEnable -eq 1)
-        Server   = "$($p.ProxyServer)"
-        Override = "$($p.ProxyOverride)"
-        PacUrl   = "$($p.AutoConfigURL)"
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    try {
+        $value = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+        return [pscustomobject]@{
+            Known = $true; Error = ''; Enabled = ($value.ProxyEnable -eq 1)
+            ProxyEnableExists = [bool]$value.PSObject.Properties['ProxyEnable']
+            ProxyEnableValue = $value.ProxyEnable
+            Server = [string]$value.ProxyServer; Override = [string]$value.ProxyOverride; PacUrl = [string]$value.AutoConfigURL
+        }
+    } catch {
+        return [pscustomobject]@{ Known = $false; Error = $_.Exception.Message; Enabled = $false; ProxyEnableExists = $false; ProxyEnableValue = $null; Server = ''; Override = ''; PacUrl = '' }
     }
 }
 
@@ -73,9 +70,9 @@ function Get-ProxyPortFromRegistry([string]$server) {
 }
 
 function Get-DefaultRouteTable {
-    $up = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty ifIndex)
-    $routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-                Where-Object { $up -contains $_.ifIndex -and $_.NextHop -and $_.NextHop -ne '0.0.0.0' })
+    $up = @(Get-NetAdapter -ErrorAction Stop | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty ifIndex)
+    $routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+                Where-Object { $up -contains $_.ifIndex -and $_.NextHop })
     $out = foreach ($r in $routes) {
         [pscustomobject]@{
             InterfaceAlias = $r.InterfaceAlias
@@ -101,55 +98,62 @@ function Get-RouteGuardReport {
     $proxyEndpoint = Get-RouteProxyEndpoint $wi.Server
     $inspectLocalPort = ($ProxyPort -gt 0 -or $proxyEndpoint.IsLoopback)
     if ($ProxyPort -le 0) { $ProxyPort = $proxyEndpoint.Port }
-    $routes = Get-DefaultRouteTable
+    $routes = @()
+    $routeError = ''
+    try { $routes = @(Get-DefaultRouteTable) } catch { $routeError = $_.Exception.Message }
+    $adapters = @()
+    $adapterError = ''
+    try { $adapters = @(Get-NetAdapter -ErrorAction Stop | Where-Object Status -eq 'Up') } catch { $adapterError = $_.Exception.Message }
+    $metricCandidates = New-Object System.Collections.ArrayList
+    $physicalIndexes = @($adapters | Where-Object { $_.HardwareInterface -eq $true } | ForEach-Object { $_.ifIndex })
+    $physical = $routes | Where-Object { $physicalIndexes -contains $_.IfIndex } | Sort-Object Cost | Select-Object -First 1
 
-    # ---------- 1. 虚拟网卡抢占 ----------
-    $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up')
-    $risky = @()
-    foreach ($a in $adapters) {
-        if ($a.Name -notmatch $script:VirtualPattern) { continue }
-        $ipif = Get-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-        if (-not $ipif) { continue }
-        if ([int]$ipif.InterfaceMetric -le 5) {
-            $rt = $routes | Where-Object { $_.IfIndex -eq $a.ifIndex } | Select-Object -First 1
-            $risky += [pscustomobject]@{
-                Name      = $a.Name
-                Metric    = [int]$ipif.InterfaceMetric
-                HasRoute  = [bool]$rt
-                Cost      = if ($rt) { $rt.Cost } else { $null }
-            }
+    # 名称只是线索；只有明确的非物理接口和另一物理默认路由才形成可比较证据。
+    foreach ($adapter in $adapters) {
+        $hardwareVirtual = ($adapter.PSObject.Properties['HardwareInterface'] -and $adapter.HardwareInterface -eq $false)
+        if (-not $hardwareVirtual -and $adapter.Name -notmatch $script:VirtualPattern) { continue }
+        try {
+            $ipif = Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1
+            if (-not $ipif) { throw '没有读取到 IPv4 接口配置' }
+        } catch {
+            [void]$findings.Add((New-Finding 'virtual-metric' 'warn' ('接口「' + $adapter.Name + '」') ('无法读取接口跃点：' + $_.Exception.Message) '重新检测接口配置'))
+            continue
         }
+        $route = $routes | Where-Object { $_.IfIndex -eq $adapter.ifIndex } | Sort-Object Cost | Select-Object -First 1
+        $competing = ($hardwareVirtual -and $route -and $physical -and $route.IfIndex -ne $physical.IfIndex -and $route.Cost -le $physical.Cost)
+        $detail = '「' + $adapter.Name + '」接口跃点 = ' + $ipif.InterfaceMetric
+        if ($routeError) { $detail += '；默认路由读取失败，当前路由状态未知：' + $routeError }
+        elseif (-not $route) { $detail += '；当前无此接口的默认路由，未据此预测之后的出口' }
+        elseif (-not $physical) { $detail += '；当前默认路由成本 ' + $route.Cost + '，没有可比较的物理默认路由' }
+        else { $detail += '；默认路由成本 ' + $route.Cost + '，物理候选「' + $physical.InterfaceAlias + '」成本 ' + $physical.Cost }
+        if (-not $hardwareVirtual) { $detail += '；名称仅为虚拟接口线索，未确认接口类型' }
+        if ($competing) { $detail += '；该默认出口优先级不低于物理候选，可能是用户所需的 VPN 路径，未据此认定故障' }
+        $fix = if ($competing) { '如需优先使用物理出口，可查看逐项处理中的具体目标值与影响' } else { '' }
+        [void]$findings.Add((New-Finding 'virtual-metric' $(if ($competing) { 'warn' } else { 'ok' }) ('接口「' + $adapter.Name + '」') $detail $fix))
+        [void]$metricCandidates.Add([pscustomobject]@{
+            InterfaceIndex = [int]$adapter.ifIndex; InterfaceAlias = [string]$adapter.Name
+            InterfaceMetric = [int]$ipif.InterfaceMetric; AutomaticMetric = [string]$ipif.AutomaticMetric
+            HardwareVirtual = [bool]$hardwareVirtual; HasRoute = [bool]$route; Competing = [bool]$competing
+            RouteMetric = $(if ($route) { [int]$route.RouteMetric } else { $null })
+            RouteCost = $(if ($route) { [int]$route.Cost } else { $null })
+            PhysicalInterfaceIndex = $(if ($physical) { [int]$physical.IfIndex } else { $null })
+            PhysicalInterfaceAlias = $(if ($physical) { [string]$physical.InterfaceAlias } else { '' })
+            PhysicalCost = $(if ($physical) { [int]$physical.Cost } else { $null })
+        })
+    }
+    if ($adapterError -or $routeError) {
+        [void]$findings.Add((New-Finding 'virtual-metric' 'warn' '默认路由状态未知' (($adapterError, $routeError | Where-Object { $_ }) -join '；') '重新检测'))
+    } elseif ($metricCandidates.Count -eq 0) {
+        [void]$findings.Add((New-Finding 'virtual-metric' 'ok' '默认路由候选' '没有发现需要比较的疑似虚拟接口' ''))
     }
 
-    if ($risky.Count -eq 0) {
-        [void]$findings.Add((New-Finding 'virtual-metric' 'ok' '虚拟网卡跃点' '没有发现跃点 ≤5 的虚拟网卡' ''))
-    } else {
-        $primary = if ($routes.Count -gt 0) { $routes[0] } else { $null }
-        foreach ($r in $risky) {
-            $detail = "「$($r.Name)」接口跃点 = $($r.Metric)（越低越优先）"
-            $bad = $false
-            if ($r.HasRoute -and $primary) {
-                if ($r.Cost -le $primary.Cost) { $bad = $true; $detail += "；它的默认路由成本 $($r.Cost) ≤ 主链路 $($primary.InterfaceAlias) 的 $($primary.Cost)，会抢走流量" }
-                else { $detail += "；有默认路由但成本 $($r.Cost) 高于主链路 $($primary.Cost)，暂不抢占" }
-            } else {
-                $detail += '；当前未挂默认路由，但当其他链路断开时会被启用'
-            }
-            [void]$findings.Add((New-Finding 'virtual-metric' $(if ($bad) { 'warn' } else { 'ok' }) "虚拟网卡「$($r.Name)」" $detail 'VPN 不使用时禁用该网卡，或把它的接口跃点提到 9000'))
-        }
-    }
-
-    # ---------- 2. TUN 与系统代理双开 ----------
     $tun = @($adapters | Where-Object { $_.Name -match '(?i)mihomo|sing-?box|clash|wintun' })
-    if ($tun.Count -gt 0 -and $wi.Enabled) {
-        [void]$findings.Add((New-Finding 'tun-proxy-both' 'warn' 'TUN 与系统代理同时开启' `
-            ("检测到 TUN 网卡（" + (($tun | ForEach-Object { $_.Name }) -join ', ') + '）且系统代理也开着，流量被劫持了两次，容易出现部分网站异常') `
-            '二选一：要么关 TUN 用系统代理，要么关系统代理用 TUN'))
-    } elseif ($tun.Count -gt 0) {
-        [void]$findings.Add((New-Finding 'tun-proxy-both' 'warn' '仅 TUN 模式' `
-            ("检测到 TUN 网卡（" + (($tun | ForEach-Object { $_.Name }) -join ', ') + '），此时系统代理开关是无效的——关掉它也照样走代理') `
-            '要彻底直连，必须退出代理软件关闭 TUN'))
+    if ($tun.Count -gt 0) {
+        $tunDetail = '名称匹配到疑似 TUN 接口（' + (($tun | ForEach-Object { $_.Name }) -join ', ') + '）；名称仅为线索，未验证 TUN 是否承载当前流量'
+        if ($wi.Enabled) { $tunDetail += '；手动系统代理已开启，配置并存不能确认双重代理或故障' }
+        [void]$findings.Add((New-Finding 'tun-proxy-both' 'warn' '疑似 TUN 接口' $tunDetail '需要确认时查看代理客户端及实际出口设置'))
     } else {
-        [void]$findings.Add((New-Finding 'tun-proxy-both' 'ok' 'TUN 状态' '没有代理 TUN 网卡，系统代理开关是有效的' ''))
+        [void]$findings.Add((New-Finding 'tun-proxy-both' 'ok' 'TUN 线索' '没有匹配的 TUN 接口名称；未验证其他隧道或应用自己的代理路径' ''))
     }
 
     # ---------- 3. 代理端口对内网开放 ----------
@@ -159,7 +163,7 @@ function Get-RouteGuardReport {
         try {
             $listen = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq $ProxyPort })
             $listenKnown = $true
-        } catch { }
+        } catch { $listenKnown = $false }
         if (-not $listenKnown) {
             [void]$findings.Add((New-Finding 'lan-expose' 'warn' "本机端口 $ProxyPort" '无法读取监听信息，局域网暴露状态未知' ''))
         } elseif ($listen.Count -eq 0) {
@@ -178,7 +182,11 @@ function Get-RouteGuardReport {
     }
 
     # ---------- 4. 代理残留 ----------
-    if ($wi.Enabled) {
+    $endpointKnown = $false
+    $alive = $false
+    if ($wi.PSObject.Properties['Known'] -and -not $wi.Known) {
+        [void]$findings.Add((New-Finding 'stale-proxy' 'warn' '系统代理状态未知' ('无法读取系统代理：' + $wi.Error) '重新检测'))
+    } elseif ($wi.Enabled) {
         if (-not $proxyEndpoint.Known) {
             [void]$findings.Add((New-Finding 'stale-proxy' 'warn' '系统代理状态未知' '无法解析系统代理端点，未验证其可用性' '检查代理地址和端口格式'))
         } elseif (-not $proxyEndpoint.IsLoopback) {
@@ -211,7 +219,7 @@ function Get-RouteGuardReport {
             } elseif (-not $alive) {
                 [void]$findings.Add((New-Finding 'stale-proxy' 'err' '代理残留' `
                     "系统代理开着（$($wi.Server)），但本机目标地址和端口没有进程监听，使用此代理的请求可能失败" `
-                    '执行「代理开关」的关闭动作，或点「一键修复」'))
+                    '查看逐项处理中的关闭手动代理操作，或启动对应代理客户端'))
             } else {
                 [void]$findings.Add((New-Finding 'stale-proxy' 'ok' '系统代理' "指向 $($wi.Server)，对应本机端点已监听（未验证代理协议）" ''))
             }
@@ -223,8 +231,8 @@ function Get-RouteGuardReport {
     # ---------- 5. PAC 与手动代理并存 ----------
     if ($wi.PacUrl -and $wi.Server) {
         [void]$findings.Add((New-Finding 'pac-conflict' 'warn' 'PAC 与手动代理并存' `
-            "同时设置了 PAC（$($wi.PacUrl)）和手动代理（$($wi.Server)），PAC 会接管解析，手动设置形同虚设" `
-            '只保留一种：要么用 PAC，要么用固定代理'))
+            "同时保存了 PAC（$($wi.PacUrl)）和手动代理（$($wi.Server)）；实际使用取决于应用和自动配置结果，未验证二者发生冲突" `
+            '如有访问异常，核对应用实际采用的代理设置'))
     }
 
     return [pscustomobject]@{
@@ -232,6 +240,12 @@ function Get-RouteGuardReport {
         ProxyPort   = $ProxyPort
         SystemProxy = $wi
         Routes      = $routes
+        RoutesKnown = (-not $routeError -and -not $adapterError)
+        MetricCandidates = @($metricCandidates)
+        ProxyEvidence = [pscustomobject]@{
+            Endpoint = $proxyEndpoint; ListenerKnown = $endpointKnown; ListenerAlive = $alive
+            ManualDisableSupported = ($wi.Enabled -and $proxyEndpoint.IsLoopback -and $endpointKnown -and -not $alive -and $wi.Server -notmatch '[=;]')
+        }
         Findings    = @($findings)
         Worst       = $(if (@($findings | Where-Object Severity -eq 'err').Count -gt 0) { 'err' }
                         elseif (@($findings | Where-Object Severity -eq 'warn').Count -gt 0) { 'warn' }
