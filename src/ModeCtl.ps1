@@ -262,10 +262,11 @@ function Invoke-ModeProxy {
             }
         }
         if ($found.Count -gt 0) {
+            $origPort = [int]$cfg.port
             $cfg.port = $found[0]
-            Save-Config $cfg
+            # 不写回配置：用户显式设置的端口优先，自动发现只用于本次运行
             $r = Invoke-Verify -PortOverride ([int]$cfg.port) -Quiet -Json
-            [void]$steps.Add((New-Step '自动发现代理端口' $true "找到 $($cfg.port)（$($r.Protocol)）并已保存"))
+            [void]$steps.Add((New-Step '自动发现代理端口' $true "设置的端口 $($origPort) 未监听，本次临时使用 $($cfg.port)（$($r.Protocol)），不会改写设置"))
         }
     }
 
