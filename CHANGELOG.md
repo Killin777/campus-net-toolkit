@@ -2,6 +2,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号语义化。
 
+## [1.4.7] - 2026-10-27
+
+### 修复
+- **「校园网登录」一直提示「请等待本轮检测完成」**：登录流程读 `$script:networkSnapshot`，
+  但这个变量从来没有被赋值（后台监测写的是 `$script:lastSnapshot`）。现在统一用 `lastSnapshot`。
+- 流程回归新增静态检查：源码里的 `$script:` 变量不能「只读不写」，防止再用到不存在的变量。
+- 去掉一处不存在的 `$script:portalTimer` 引用。
+
 ## [1.4.6] - 2026-10-27
 
 ### 文档
