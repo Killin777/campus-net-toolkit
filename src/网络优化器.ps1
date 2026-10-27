@@ -723,37 +723,26 @@ $repairHistoryList.Add_SelectedIndexChanged({ $bUndoRepair.Enabled = $repairHist
 $toolsLayout = New-Object Windows.Forms.TableLayoutPanel
 $toolsLayout.Dock = 'Fill'
 $toolsLayout.ColumnCount = 1
-$toolsLayout.RowCount = 4
+$toolsLayout.RowCount = 3
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',54)))
-[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',60)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',200)))
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
-[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',150)))
 $toolsPage.Controls.Add($toolsLayout)
-$toolsHint = New-TextLabel $toolsLayout '需要时再选择专项工具。网络写入会显示影响并按对应路径保存备份。' 11
+$toolsHint = New-TextLabel $toolsLayout '按「检查 → 连接 → 修复」排列：扫描都是只读，写入类动作会先备份并二次确认。' 11
 $toolsHint.Dock = 'Fill'
-$modePanel = New-Object Windows.Forms.FlowLayoutPanel
-$modePanel.Dock = 'Fill'
-$toolsLayout.Controls.Add($modePanel,0,1)
-$bProxyOn = New-AppButton $modePanel '验证并开启系统代理' $false 220
-$bProxyOff = New-AppButton $modePanel '只关闭手动系统代理' $false 220
 $btnPanel = New-Object Windows.Forms.FlowLayoutPanel
 $btnPanel.Dock = 'Fill'
 $btnPanel.AutoScroll = $true
-$toolsLayout.Controls.Add($btnPanel,0,2)
+$toolsLayout.Controls.Add($btnPanel,0,1)
 $bCheck = New-AppButton $btnPanel '详细连接体检' $false 220
 $bOpt = New-AppButton $btnPanel '校园网体检' $false 220
 $bDns = New-AppButton $btnPanel 'DNS 优选（备份后应用）' $false 220
 $bLatency = New-AppButton $btnPanel '延迟采样测试' $false 220
-$bLowLat = New-AppButton $btnPanel '路由检查与逐项修复' $false 220
-$bProxy = New-AppButton $btnPanel '打开校园网登录页' $false 220
-$bRescue = New-AppButton $btnPanel '网络急救…' $false 220
-$bFolder = New-AppButton $btnPanel '打开代理软件' $false 220
 $bReport = New-AppButton $btnPanel '导出诊断报告' $false 220
-$bRestore = New-AppButton $btnPanel '还原与备份…' $false 220
-$bWired = New-AppButton $btnPanel '检查有线连接' $false 220
-$bAutoDns = New-AppButton $btnPanel '恢复当前网卡自动 DNS…' $false 220
-$bReconnect = New-AppButton $btnPanel '重新关联当前 Wi-Fi…' $false 220
-$bDirectAdvanced = New-AppButton $btnPanel '高级：原直连模式…' $false 220
+$bSystemProxy = New-AppButton $btnPanel '系统代理 ▾' $false 220
+$bProxy = New-AppButton $btnPanel '打开校园网登录页' $false 220
+$bRescue = New-AppButton $btnPanel '网络急救 ▾' $false 220
+$bRestore = New-AppButton $btnPanel '还原与备份 ▾' $false 220
 
 # 结果区：日志与曲线跟按钮同页，点完立刻能看到输出
 $outputRow = New-Object Windows.Forms.TableLayoutPanel
@@ -763,7 +752,7 @@ $outputRow.RowCount = 1
 [void]$outputRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',42)))
 [void]$outputRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',58)))
 $outputRow.Margin = New-Object Windows.Forms.Padding(0)
-$toolsLayout.Controls.Add($outputRow,0,3)
+$toolsLayout.Controls.Add($outputRow,0,2)
 
 $chart = New-Object Windows.Forms.Panel
 $chart.Dock = 'Fill'
@@ -818,8 +807,8 @@ $log.ScrollBars = 'Vertical'
 $logGroup.Controls.Add($log,0,1)
 $tip = New-Object Windows.Forms.ToolTip
 $tip.AutoPopDelay = 15000
-$tip.SetToolTip($bProxyOff,'仅关闭手动系统代理；保留 PAC、DNS 与路由，先保存原值。')
-$tip.SetToolTip($bWired,'读取当前以太网协商速率、IPv4 出口、认证与网卡累计计数，不调整双工、MTU 或 TCP。')
+$tip.SetToolTip($bSystemProxy,'验证端口、协议、转发与出口后再设系统代理；关闭只动手动代理，保留 PAC 与 DNS。')
+$tip.SetToolTip($bRescue,'一键急救在菜单里：清理死代理 / 刷 DNS / 续租；重连 Wi-Fi 与恢复自动 DNS 单独执行。')
 $tip.SetToolTip($bDns,'手动测试 DNS 后，确认才应用；应用前保存原值。')
 $foot = New-Object Windows.Forms.LinkLabel
 $foot.Text = '使用说明 · DNS、接口优先级与无线频段原值见网络备份；逐项修复可单独撤销。'
@@ -854,7 +843,7 @@ function Set-Busy {
     param([bool]$On)
     $script:busy=$On
     $form.Cursor=if ($On) { [Windows.Forms.Cursors]::WaitCursor } else { [Windows.Forms.Cursors]::Default }
-    foreach ($button in @($bCheck,$bOpt,$bDns,$bLatency,$bLowLat,$bProxy,$bRescue,$bReport,$bRestore,$bFolder,$bTimeline,$bProxyOn,$bProxyOff,$bSettings,$bScanRepairs)) {
+    foreach ($button in @($bCheck,$bOpt,$bDns,$bLatency,$bProxy,$bRescue,$bReport,$bRestore,$bTimeline,$bSystemProxy,$bSettings,$bScanRepairs)) {
         if ($button) { $button.Enabled = -not $On }
     }
     $badge.Enabled = -not $On
@@ -884,14 +873,14 @@ function Update-Status {
         $script:proxyStateLabel.ForeColor = $stateColor
         $script:proxyStateDetail.Text = $stateDetail
     }
-    # 开关按钮高亮跟随实际状态：点谁谁亮，而不是固定亮一个
-    if ($bProxyOn -and $bProxyOff) {
+    # 系统代理按钮文字跟随实际状态
+    if ($bSystemProxy) {
         if ($proxyOn) {
-            $bProxyOn.BackColor  = $C.Accent; $bProxyOn.Tag  = $C.Accent
-            $bProxyOff.BackColor = $C.Card2;  $bProxyOff.Tag = $C.Card2
+            $bSystemProxy.Text = '系统代理：已开启 ▾'
+            $bSystemProxy.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153)
         } else {
-            $bProxyOn.BackColor  = $C.Card2;  $bProxyOn.Tag  = $C.Card2
-            $bProxyOff.BackColor = $C.Accent; $bProxyOff.Tag = $C.Accent
+            $bSystemProxy.Text = '系统代理：已关闭 ▾'
+            $bSystemProxy.ForeColor = [System.Drawing.Color]::FromArgb(0xE6,0xE8,0xEB)
         }
     }
 
@@ -1105,6 +1094,27 @@ function Invoke-LatencyTest {
 }
 
 
+
+function Invoke-ResetCurrentDns {
+    if (-not (Test-AdminAccess)) { return }
+    $info = Get-NetInfo
+    if (-not $info.Adapter -or $info.Adapter -eq '—') { Write-Log '没有识别到当前网卡，无法恢复自动 DNS。' 'warn'; return }
+    $answer = [Windows.Forms.MessageBox]::Show(('将把「' + $info.Adapter + '」的 DNS 改为自动获取（DHCP）。会先保存当前网络设置备份。继续？'), '恢复自动 DNS', 'YesNo', 'Question')
+    if ($answer -ne 'Yes') { return }
+    Set-Busy $true
+    try {
+        $backup = New-NetBackup
+        Write-Log ('已备份当前网络设置：' + [IO.Path]::GetFileName($backup)) 'dim'
+        Set-DnsClientServerAddress -InterfaceAlias $info.Adapter -ResetServerAddresses -ErrorAction Stop
+        ipconfig /flushdns | Out-Null
+        Write-Log ('已把「' + $info.Adapter + '」的 DNS 恢复为自动获取') 'ok'
+        Update-Status | Out-Null
+    } catch {
+        Write-Log ('恢复自动 DNS 失败：' + $_.Exception.Message) 'err'
+    } finally {
+        Set-Busy $false
+    }
+}
 
 function Invoke-Rescue {
     if ([Windows.Forms.MessageBox]::Show("将清理无法连接的手动代理、刷新 DNS，并尝试续租当前网卡的 DHCP 地址。需要重启网卡时会另行询问。`n`n继续？",'网络急救','YesNo','Question') -ne 'Yes') { return }
@@ -2016,6 +2026,78 @@ function Update-DetailUi {
     Set-DetailSection 'Proxy' $proxyState $proxyEvidence $proxyAt $proxySuggest
 }
 
+# ---------- 检查新版本（可选、只读；连不上 GitHub 就静默跳过） ----------
+$script:updateWork = $null
+$script:updateChecked = $false
+
+function Test-NewerVersion {
+    param([string]$Current,[string]$Latest)
+    $c = $null
+    $l = $null
+    if (-not [version]::TryParse(([string]$Current).TrimStart([char[]]@('v','V')), [ref]$c)) { return $false }
+    if (-not [version]::TryParse(([string]$Latest).TrimStart([char[]]@('v','V')), [ref]$l)) { return $false }
+    return ($l -gt $c)
+}
+
+function Start-UpdateCheck {
+    if ($script:updateWork -or $script:updateChecked) { return }
+    $script:updateChecked = $true
+    $code = {
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+        try {
+            $request = [Net.HttpWebRequest]::Create('https://api.github.com/repos/Killin777/campus-net-toolkit/releases/latest')
+            $request.Timeout = 5000
+            $request.ReadWriteTimeout = 5000
+            $request.UserAgent = 'CampusNetToolkit/update-check'
+            $response = $request.GetResponse()
+            $reader = New-Object IO.StreamReader($response.GetResponseStream())
+            $body = $reader.ReadToEnd()
+            $reader.Dispose()
+            $response.Close()
+            $doc = $body | ConvertFrom-Json
+            [pscustomobject]@{ Ok = $true; Tag = [string]$doc.tag_name; Url = [string]$doc.html_url; Error = '' }
+        } catch {
+            [pscustomobject]@{ Ok = $false; Tag = ''; Url = ''; Error = $_.Exception.Message }
+        }
+    }
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript($code.ToString())
+    $script:updateWork = [pscustomobject]@{ PowerShell = $ps; Handle = $ps.BeginInvoke() }
+}
+
+function Receive-UpdateCheck {
+    if (-not $script:updateWork) { return }
+    if ($script:busy) { return }
+    if (-not $script:updateWork.Handle.IsCompleted) { return }
+    $work = $script:updateWork
+    $script:updateWork = $null
+    $result = $null
+    try {
+        $out = @($work.PowerShell.EndInvoke($work.Handle))
+        if ($out.Count -gt 0) { $result = $out[$out.Count - 1] }
+    } catch { } finally { try { $work.PowerShell.Dispose() } catch { } }
+    if (-not $result) { return }
+    if (-not $result.Ok) {
+        Write-Log ('检查更新：连不上 GitHub（' + [string]$result.Error + '）') 'dim'
+        return
+    }
+    $latestText = [string]$result.Tag
+    if (-not (Test-NewerVersion ([string]$script:AppVersion) $latestText)) {
+        if ($latestText) { Write-Log ('检查更新：已是最新版本 v' + $script:AppVersion) 'dim' }
+        return
+    }
+    $shown = $latestText.TrimStart([char[]]@('v','V'))
+    Write-Log ('检查更新：发现新版本 v' + $shown + '（当前 v' + $script:AppVersion + '）') 'warn'
+    $url = [string]$result.Url
+    if ([string]::IsNullOrWhiteSpace($url)) { $url = 'https://github.com/Killin777/campus-net-toolkit/releases/latest' }
+    $answer = [Windows.Forms.MessageBox]::Show(
+        ('发现新版本 v' + $shown + '（当前 v' + $script:AppVersion + "）。`n`n是否打开下载页面？`n" + $url),
+        '检查更新', 'YesNo', 'Question')
+    if ($answer -eq 'Yes') {
+        try { Start-Process $url } catch { Write-Log ('无法打开浏览器：' + $_.Exception.Message) 'warn' }
+    }
+}
+
 
 function Invoke-WifiWatchdog {
     # 断链判定：
@@ -2559,6 +2641,8 @@ function Show-SettingsWindow {
     if ($j.clientExe) { $curExe = [string]$j.clientExe }
     $parsedPort = 0
     if ([int]::TryParse([string]$j.port,[ref]$parsedPort) -and $parsedPort -ge 1 -and $parsedPort -le 65535) { $curPort=$parsedPort }
+    $curCheckUpdates = $true
+    if ($j -and $j.ContainsKey('checkUpdates')) { $curCheckUpdates = [bool]$j['checkUpdates'] }
 
     $w = New-Object System.Windows.Forms.Form
     $w.Icon = $form.Icon
@@ -2658,6 +2742,15 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
     $l5gHint.Size = New-Object System.Drawing.Size(580, 20)
     $w.Controls.Add($l5gHint)
 
+    $chkUpdates = New-Object System.Windows.Forms.CheckBox
+    $chkUpdates.Text = '启动时检查新版本（需要能访问 GitHub，可随时关闭）'
+    $chkUpdates.ForeColor = $C.Text
+    $chkUpdates.Location = New-Object System.Drawing.Point(18, 350)
+    $chkUpdates.Size = New-Object System.Drawing.Size(560, 24)
+    $chkUpdates.FlatStyle = 'Flat'
+    $chkUpdates.Checked = [bool]$curCheckUpdates
+    $w.Controls.Add($chkUpdates)
+
     try {
         $wl = Read-WifiList
         $cnt = @($wl.networks).Count
@@ -2752,6 +2845,7 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
         if (-not $ht['host']) { $ht['host'] = '127.0.0.1' }
         $ht['clientExe'] = $exe
         $ht['port'] = $p
+        $ht['checkUpdates'] = [bool]$chkUpdates.Checked
         try {
             $cfgDir = Split-Path -Parent $cfgFile
             if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
@@ -2771,6 +2865,7 @@ $txtResult.Size = New-Object System.Drawing.Size(616, 96)
             } catch { Write-Log ('频段偏好未改动：' + $_.Exception.Message) 'dim' }
             $tail = if ($exe) { "，客户端 " + [System.IO.Path]::GetFileName($exe) } else { '，未设置客户端' }
             Write-Log ("设置已保存：端口 $p$tail") 'ok'
+            if ($chkUpdates.Checked) { Start-UpdateCheck }
             Update-Status | Out-Null
             $w.DialogResult = 'OK'
             $w.Close()
@@ -3210,7 +3305,7 @@ $bCheck.Add_Click({ Invoke-Check })
     $script:monitorErrAt = [datetime]::MinValue
     $script:monitorUiTimer = New-Object System.Windows.Forms.Timer
     $script:monitorUiTimer.Interval = 1000
-    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi; Update-LayerUi; Update-DetailUi })
+    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi; Update-LayerUi; Update-DetailUi; Receive-UpdateCheck })
     $script:monitorUiTimer.Start()
 
     $bPrimary.Add_Click({
@@ -3234,13 +3329,11 @@ $bCheck.Add_Click({ Invoke-Check })
 $bOpt.Add_Click({ Invoke-CampusCheck })
 $bDns.Add_Click({ if (Test-AdminAccess) { Set-Busy $true; try { Invoke-DnsOptimize } catch { Write-Log $_.Exception.Message 'err' } finally { Set-Busy $false } } })
 $bLatency.Add_Click({ Invoke-LatencyTest })
-$bLowLat.Add_Click({ Show-Page 2; Invoke-RepairScan })
 $bScanRepairs.Add_Click({ Invoke-RepairScan })
 $bApplyRepairs.Add_Click({ Invoke-ApplyRepairs })
 $bUndoRepair.Add_Click({ Invoke-UndoRepair })
 $bViewBackup.Add_Click({ Invoke-OpenRepairRecord })
     $bProxy.Add_Click({ Open-CampusLogin })
-$bRescue.Add_Click({ if (Test-AdminAccess) { Invoke-Rescue } })
 $bReport.Add_Click({ Invoke-ExportReport })
 $restoreMenu=New-Object Windows.Forms.ContextMenuStrip
 $restoreModeItem=$restoreMenu.Items.Add('还原代理 / 使用模式')
@@ -3249,10 +3342,27 @@ $restoreNetworkItem=$restoreMenu.Items.Add('恢复网络备份…')
 $restoreNetworkItem.Add_Click({ Invoke-RestoreBackup })
 $bRestore.Add_Click({ $restoreMenu.Show($bRestore,(New-Object Drawing.Point(0,$bRestore.Height))) })
 $bTimeline.Add_Click({ Show-TimelineWindow })
-$bProxyOn.Add_Click({ Invoke-ModeFile 'proxy' })
-$bProxyOff.Add_Click({ Invoke-ModeFile 'direct' })
 $bSettings.Add_Click({ Show-SettingsWindow })
-$bFolder.Add_Click({ Invoke-ModeFile 'open-client' })
+
+# 系统代理：一个按钮 + 菜单，状态写在按钮文字上
+$proxyMenu = New-Object Windows.Forms.ContextMenuStrip
+$proxyOnItem = $proxyMenu.Items.Add('验证并开启系统代理')
+$proxyOnItem.Add_Click({ Invoke-ModeFile 'proxy' })
+$proxyOffItem = $proxyMenu.Items.Add('只关闭手动系统代理')
+$proxyOffItem.Add_Click({ Invoke-ModeFile 'direct' })
+$proxyClientItem = $proxyMenu.Items.Add('打开代理软件')
+$proxyClientItem.Add_Click({ Invoke-ModeFile 'open-client' })
+$bSystemProxy.Add_Click({ $proxyMenu.Show($bSystemProxy,(New-Object Drawing.Point(0,$bSystemProxy.Height))) })
+
+# 网络急救：一键急救 / 只重连 Wi-Fi / 恢复自动 DNS
+$rescueMenu = New-Object Windows.Forms.ContextMenuStrip
+$rescueRunItem = $rescueMenu.Items.Add('一键急救…（清理代理 / 刷 DNS / 续租）')
+$rescueRunItem.Add_Click({ if (Test-AdminAccess) { Invoke-Rescue } })
+$rescueWifiItem = $rescueMenu.Items.Add('只重连当前 Wi-Fi')
+$rescueWifiItem.Add_Click({ Invoke-ReconnectWifi })
+$rescueDnsItem = $rescueMenu.Items.Add('恢复当前网卡自动 DNS…')
+$rescueDnsItem.Add_Click({ Invoke-ResetCurrentDns })
+$bRescue.Add_Click({ $rescueMenu.Show($bRescue,(New-Object Drawing.Point(0,$bRescue.Height))) })
 
 # 每 5 秒自动刷新状态（忙碌时跳过），避免窗口开着显示陈旧数据
 $timer = New-Object System.Windows.Forms.Timer
@@ -3280,6 +3390,8 @@ $form.Add_FormClosing({
     foreach ($activeTimer in @($timer,$script:wifiTimer,$script:monitorUiTimer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
     try { if ($script:monitor) { Stop-NetworkMonitor -Monitor $script:monitor } } catch { }
     $restoreMenu.Dispose()
+    try { $proxyMenu.Dispose() } catch { }
+    try { $rescueMenu.Dispose() } catch { }
 })
 $timer.Start()
 
@@ -3326,6 +3438,13 @@ $log.Focus() | Out-Null
         return
     }
     if ($Screenshot -or $Settings -or $Timeline -or $Help -or $env:CAMPUS_NET_SMOKE) { return }
+    # 检查新版本（默认开启，可在设置里关闭；只读，连不上 GitHub 就跳过）
+    try {
+        $updateSettings = Read-ProxySettings
+        $checkUpdates = $true
+        if ($updateSettings -and $updateSettings.ContainsKey('checkUpdates')) { $checkUpdates = [bool]$updateSettings['checkUpdates'] }
+        if ($checkUpdates) { Start-UpdateCheck }
+    } catch { }
     # 不再自动探测校园网：登录交给默认浏览器（点「校园网登录」按钮）
     if ($AutoClose) {
         # 自测用：1.2 秒后自动关窗，用于验证关闭后进程是否退出
