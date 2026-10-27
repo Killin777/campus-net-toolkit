@@ -651,7 +651,7 @@ $repairLayout.RowCount = 4
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',128)))
 $repairsPage.Controls.Add($repairLayout)
-    $lbRepairSummary = New-TextLabel $repairLayout '逐项处理只改一处：先写备份，改完读回复检，可单独撤销。修改接口跃点需要管理员权限；关闭手动代理不需要。' 11
+    $lbRepairSummary = New-TextLabel $repairLayout '逐项处理只改一处：先写备份，改完读回复检，可单独撤销。点上方「检测可处理项」开始扫描（只读，约 2 秒）；修改接口跃点需要管理员权限。' 11
     $lbRepairSummary.ForeColor = $C.Dim
     $lbRepairSummary.AutoSize = $false
     $lbRepairSummary.Dock = 'Fill'
@@ -2884,8 +2884,54 @@ function New-RepairRow {
     $script:repairTexts += $label
 }
 
+function New-RepairSectionLabel {
+    param([string]$Text,[int]$TopGap = 10)
+    $label = New-Object Windows.Forms.Label
+    $label.AutoSize = $true
+    $label.MaximumSize = New-Object Drawing.Size([Math]::Max(320, $repairRows.ClientSize.Width - 48), 0)
+    $label.Margin = New-Object Windows.Forms.Padding(0,$TopGap,8,4)
+    $label.Text = $Text
+    $label.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    $label.Font = New-Object Drawing.Font('Microsoft YaHei UI',9,[Drawing.FontStyle]::Bold)
+    $repairRows.RowCount++
+    [void]$repairRows.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+    [void]$repairRows.Controls.Add($label,0,$repairRows.RowCount - 1)
+    $script:repairTexts += $label
+}
+
+function New-RepairFindingRow {
+    param($Finding)
+    $severity = [string]$Finding.Severity
+    if ($severity -eq 'ok') {
+        $mark = [string][char]0x221A
+        $color = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    } elseif ($severity -eq 'warn') {
+        $mark = '!'
+        $color = [System.Drawing.Color]::FromArgb(0xFB,0xBF,0x24)
+    } else {
+        $mark = [string][char]0x00D7
+        $color = [System.Drawing.Color]::FromArgb(0xF8,0x71,0x71)
+    }
+    $text = $mark + ' ' + [string]$Finding.Title
+    if ($severity -ne 'ok') {
+        if ($Finding.Detail) { $text += "`r`n   " + [string]$Finding.Detail }
+        if ($Finding.Fix) { $text += "`r`n   " + [string][char]0x2192 + ' ' + [string]$Finding.Fix }
+    }
+    $label = New-Object Windows.Forms.Label
+    $label.AutoSize = $true
+    $label.MaximumSize = New-Object Drawing.Size([Math]::Max(320, $repairRows.ClientSize.Width - 48), 0)
+    $label.Margin = New-Object Windows.Forms.Padding(0,2,8,6)
+    $label.Text = $text
+    $label.ForeColor = $color
+    $label.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
+    $repairRows.RowCount++
+    [void]$repairRows.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+    [void]$repairRows.Controls.Add($label,0,$repairRows.RowCount - 1)
+    $script:repairTexts += $label
+}
+
 function Update-RepairItems {
-    param($Report)
+    param($Report,[int]$ElapsedMs = -1)
     $repairRows.SuspendLayout()
     try {
         $repairRows.Controls.Clear()
@@ -2894,14 +2940,30 @@ function Update-RepairItems {
         $script:repairChecks = @()
         $script:repairTexts = @()
         $items = @(Get-RouteRepairItems -Report $Report)
-        foreach ($item in $items) { New-RepairRow $item }
-        if ($items.Count -eq 0) {
-            $lbRepairSummary.Text = '本次检测没有发现可自动处理的项：默认路由与系统代理按当前证据看是正常的。'
-            $lbRepairSummary.ForeColor = $C.Dim
-        } else {
-            $lbRepairSummary.Text = '本次检测到 ' + [string]$items.Count + ' 项可处理。每项先写备份、改完读回复检，失败会保留记录；默认不勾选，请先看「改动」和「影响」。'
-            $lbRepairSummary.ForeColor = $C.Text
+        $findings = @($Report.Findings)
+        $notable = @($findings | Where-Object { $_.Severity -ne 'ok' })
+        if ($items.Count -gt 0) {
+            New-RepairSectionLabel '可处理项（勾选后点「应用已选项」）' 0
+            foreach ($item in $items) { New-RepairRow $item }
         }
+        New-RepairSectionLabel '检查结果（只读，不会修改任何设置）' $(if ($items.Count -gt 0) { 14 } else { 0 })
+        foreach ($finding in $findings) { New-RepairFindingRow $finding }
+        if ($findings.Count -eq 0) { New-RepairSectionLabel '没有可显示的检查结果' 0 }
+
+        $stamp = (Get-Date).ToString('HH:mm:ss')
+        $cost = if ($ElapsedMs -ge 0) { '（' + ([math]::Round($ElapsedMs / 1000, 1)).ToString('0.0') + ' 秒）' } else { '' }
+        if ($items.Count -gt 0) {
+            $summary = '扫描完成 ' + $stamp + $cost + '：' + [string]$items.Count + ' 项可处理。每项先备份、改完复检，默认不勾选。'
+            if ($notable.Count -gt 0) { $summary += '另有 ' + [string]$notable.Count + ' 条检查项需要留意。' }
+            $lbRepairSummary.ForeColor = [System.Drawing.Color]::FromArgb(0xE6,0xE8,0xEB)
+        } elseif ($notable.Count -gt 0) {
+            $summary = '扫描完成 ' + $stamp + $cost + '：没有可自动处理的项，但有 ' + [string]$notable.Count + ' 条检查项需要留意（见下方）。'
+            $lbRepairSummary.ForeColor = [System.Drawing.Color]::FromArgb(0xFB,0xBF,0x24)
+        } else {
+            $summary = '扫描完成 ' + $stamp + $cost + '：没有可自动处理的项，' + [string]$findings.Count + ' 条检查结果均正常。'
+            $lbRepairSummary.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+        }
+        $lbRepairSummary.Text = $summary
     } finally {
         $repairRows.ResumeLayout()
     }
@@ -2942,15 +3004,24 @@ function Update-RepairHistory {
 }
 
 function Invoke-RepairScan {
+    if ($script:busy) { return }
     Set-Busy $true
+    $lbRepairSummary.Text = '正在扫描（只读，约 2 秒）…'
+    $lbRepairSummary.ForeColor = [System.Drawing.Color]::FromArgb(0xE6,0xE8,0xEB)
+    [Windows.Forms.Application]::DoEvents()
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
         Write-Log '扫描逐项处理项 …' 'dim'
         $report = Get-RouteGuardReport
-        Update-RepairItems $report
+        $watch.Stop()
+        Update-RepairItems $report $watch.ElapsedMilliseconds
         Update-RepairHistory
         Write-Log ('扫描完成：' + [string]@($script:repairChecks).Count + ' 项可处理，' + [string]$repairHistoryList.Items.Count + ' 条历史记录') 'ok'
     } catch {
+        $watch.Stop()
         Write-Log ('扫描失败：' + $_.Exception.Message) 'err'
+        $lbRepairSummary.Text = '扫描失败：' + $_.Exception.Message + '（详细原因见「更多工具」的运行日志）'
+        $lbRepairSummary.ForeColor = [System.Drawing.Color]::FromArgb(0xF8,0x71,0x71)
     } finally {
         Set-Busy $false
     }
