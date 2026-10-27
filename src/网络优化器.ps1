@@ -647,7 +647,9 @@ function Update-Status {
     } elseif ($dc -eq 0) {
         $lbDrop.Text = '今日 0 次（稳定）'
     } else {
-        $txtDrop = '今日 {0} 次 —— 频繁掉线建议报修' -f $dc
+        $txtDrop = '今日 {0} 次' -f $dc
+        if ($script:dropCache.Seconds -gt 0) { $txtDrop += ('，累计中断 {0}' -f (Format-Span $script:dropCache.Seconds)) }
+        $txtDrop += ' —— 频繁掉线建议报修'
         if ($script:dropCache.Ignored -gt 0) { $txtDrop += ('（已排除 {0} 次工具操作）' -f $script:dropCache.Ignored) }
         if ($script:dropCache.Merged -gt 0) { $txtDrop += ('（已合并 {0} 次重复记录）' -f $script:dropCache.Merged) }
         $lbDrop.Text = $txtDrop
@@ -908,14 +910,28 @@ function Invoke-Rescue {
 $script:dropCache   = @{ Time = [datetime]::MinValue; Count = -1; Ignored = 0 }
 $script:ignoreCache = @{ Time = [datetime]::MinValue; Windows = @() }
 
+function Format-Span([int]$Seconds) {
+    if ($Seconds -lt 60) { return ("{0} 秒" -f $Seconds) }
+    if ($Seconds -lt 3600) { return ("{0} 分 {1} 秒" -f [int]($Seconds / 60), ($Seconds % 60)) }
+    return ("{0} 小时 {1} 分" -f [int]($Seconds / 3600), [int](($Seconds % 3600) / 60))
+}
+
 function Get-DisconnectCount {
-    # 今日"真实"断链：工具记录 + 系统事件，去重并排除维护窗口
+    # 今日断链"会话"数（不是事件条数），并累计中断时长
     if (((Get-Date) - $script:dropCache.Time).TotalSeconds -lt 60) { return $script:dropCache.Count }
     $u = Get-UnifiedLinkEvents -Days 2
     $today = (Get-Date).Date
-    $n = @($u.Times | Where-Object { $_ -ge $today }).Count
-    $script:dropCache = @{ Time = (Get-Date); Count = $n; Ignored = $u.Ignored; Merged = $u.Merged }
-    return $n
+    $todaySessions = @($u.Sessions | Where-Object { $_.Start -ge $today -or $_.End -ge $today })
+    $totalSeconds = 0
+    foreach ($s in $todaySessions) { $totalSeconds += [int]$s.Seconds }
+    $script:dropCache = @{
+        Time    = (Get-Date)
+        Count   = $todaySessions.Count
+        Seconds = $totalSeconds
+        Ignored = $u.Ignored
+        Merged  = $u.Merged
+    }
+    return $todaySessions.Count
 }
 
 function Invoke-ExportReport {
@@ -1023,7 +1039,9 @@ function Get-TimelineStats {
 
 function Show-TimelineWindow {
     $u = Get-UnifiedLinkEvents -Days 7
-    $times = @($u.Times)
+    $sessions = @($u.Sessions)
+    $times = @($sessions | ForEach-Object { $_.Start })
+    $totalSec = 0; foreach ($s in $sessions) { $totalSec += [int]$s.Seconds }
     $excluded = $u.Ignored
     $mergedCount = $u.Merged
     $st = Get-TimelineStats -Times $times
@@ -1047,6 +1065,7 @@ function Show-TimelineWindow {
     $w.Controls.Add($h)
 
     $sumText = '今日 {0} 次 · 近 7 天 {1} 次 · 断链风暴 {2} 次' -f $st.Today, $st.Total, $st.Clusters
+    if ($totalSec -gt 0) { $sumText += (" · 累计中断 {0}" -f (Format-Span $totalSec)) }
     if ($excluded -gt 0) { $sumText += (" · 已排除 {0} 次工具操作" -f $excluded) }
     if ($mergedCount -gt 0) { $sumText += (" · 已合并 {0} 次重复记录" -f $mergedCount) }
     if ($st.WorstCount -ge 3 -and $st.WorstStart) {
@@ -1131,7 +1150,10 @@ function Show-TimelineWindow {
             elseif ($sec -lt 3600) { $gap = ('  距上次 {0} 分' -f [int]($sec / 60)) }
             else { $gap = ('  距上次 {0} 小时' -f [int]($sec / 3600)) }
         }
-        $items += ('{0}{1}' -f $times[$i].ToString('MM-dd HH:mm:ss'), $gap)
+        $dur = ''
+        $secOfSession = [int]$sessions[$i].Seconds
+        if ($secOfSession -gt 0) { $dur = ('  中断 {0}' -f (Format-Span $secOfSession)) }
+        $items += ('{0}{1}{2}' -f $times[$i].ToString('MM-dd HH:mm:ss'), $dur, $gap)
     }
     $items = @($items | Select-Object -Last 40)
     [array]::Reverse($items)
@@ -1575,31 +1597,78 @@ function Get-SystemDisconnectTimes([int]$Days = 7) {
 }
 
 function Get-UnifiedLinkEvents([int]$Days = 7) {
-    # 合并两个来源：
-    #   1) 工具自己记录的断链（有持续时间、已排除维护窗口）
-    #   2) 系统 WLAN 事件 11004 —— 只补工具没在跑的时候
-    # 同一次断链两边都会记，用 ±90 秒窗口去重
+    # 断链的计数单位是「会话」，不是「事件」。
+    # 一次断链会连续产生多条 11004（断开、重试、重连），按条数计会把次数虚高一倍。
+    #   · 3 分钟内的系统事件合并为同一个会话
+    #   · 工具自己记录的断链带持续时间，优先采用
+    #   · 两边都记到的同一次断链，合并成一条
+    $GapSeconds = 180
     $since = (Get-Date).AddDays(-$Days)
-    $store = @(Get-LinkEventStore | Where-Object { $_.At -ge $since -and $_.Kind -eq '断链' })
+
+    # 1. 工具记录的断链（有持续时间）
+    $watch = @(Get-LinkEventStore | Where-Object { $_.At -ge $since -and $_.Kind -eq '断链' } |
+        ForEach-Object {
+            [pscustomobject]@{
+                Start   = $_.At.AddSeconds(-1 * [math]::Max(0, $_.Seconds))
+                End     = $_.At
+                Seconds = [int]$_.Seconds
+                Source  = 'watchdog'
+                Events  = 1
+            }
+        })
+
+    # 2. 系统事件：先按 3 分钟聚成会话，并排除维护窗口
     $sys = @(Get-SystemDisconnectTimes -Days $Days)
-
-    $times = New-Object System.Collections.ArrayList
-    foreach ($e in $store) { [void]$times.Add($e.At) }
-
     $ignored = 0
-    $merged = 0
+    $kept = New-Object System.Collections.ArrayList
     foreach ($t in $sys) {
         if (Test-IgnoredTime $t) { $ignored++; continue }
-        $near = @($store | Where-Object { [Math]::Abs(($_.At - $t).TotalSeconds) -le 90 })
-        if ($near.Count -gt 0) { $merged++; continue }
-        [void]$times.Add($t)
+        [void]$kept.Add($t)
     }
 
+    $sysSessions = New-Object System.Collections.ArrayList
+    $curStart = $null; $curEnd = $null; $curN = 0
+    foreach ($t in ($kept | Sort-Object)) {
+        if ($null -eq $curStart -or ($t - $curEnd).TotalSeconds -gt $GapSeconds) {
+            if ($null -ne $curStart) {
+                [void]$sysSessions.Add([pscustomobject]@{ Start=$curStart; End=$curEnd; Seconds=0; Source='wlan'; Events=$curN })
+            }
+            $curStart = $t; $curEnd = $t; $curN = 1
+        } else {
+            $curEnd = $t; $curN++
+        }
+    }
+    if ($null -ne $curStart) {
+        [void]$sysSessions.Add([pscustomobject]@{ Start=$curStart; End=$curEnd; Seconds=0; Source='wlan'; Events=$curN })
+    }
+
+    # 3. 合并：系统会话与工具会话重叠（±90 秒）时并成一条，保留工具记录的时长
+    $all = New-Object System.Collections.ArrayList
+    foreach ($w in $watch) { [void]$all.Add($w) }
+    $mergedCount = 0
+    foreach ($sess in $sysSessions) {
+        $hit = $null
+        foreach ($a in $all) {
+            if ([math]::Abs(($a.Start - $sess.Start).TotalSeconds) -le 90 -or
+                [math]::Abs(($a.End - $sess.End).TotalSeconds) -le 90) { $hit = $a; break }
+        }
+        if ($hit) {
+            $hit.Events += $sess.Events
+            if ($sess.Start -lt $hit.Start) { $hit.Start = $sess.Start }
+            if ($sess.End -gt $hit.End) { $hit.End = $sess.End }
+            $mergedCount++
+        } else {
+            [void]$all.Add($sess)
+        }
+    }
+
+    $sessions = @($all | Sort-Object Start)
     return [pscustomobject]@{
-        Times   = @($times | Sort-Object)
-        SystemN = $sys.Count
-        Ignored = $ignored
-        Merged  = $merged
+        Sessions = $sessions
+        SystemN  = $sys.Count
+        Ignored  = $ignored
+        Merged   = $mergedCount
+        RawMerged = $(if ($sysSessions.Count -gt 0) { $sys.Count - $sysSessions.Count } else { 0 })
     }
 }
 
