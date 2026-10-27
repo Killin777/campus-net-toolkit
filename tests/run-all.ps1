@@ -26,6 +26,9 @@ $suites = @(
     @{ Name = '协议识别';                  Script = 'Test-Protocol.ps1'; Engine = 'powershell.exe' },
     @{ Name = '产品逻辑';                  Script = 'Test-Product.ps1'; Engine = 'powershell.exe' },
     @{ Name = '诊断边界';                  Script = 'Test-Diagnostics.ps1'; Engine = 'powershell.exe' },
+    @{ Name = '后台监测';   Script = 'Test-Monitor.ps1';   Engine = 'powershell.exe' },
+    @{ Name = '路由修复';   Script = 'Test-RouteRepair.ps1'; Engine = 'powershell.exe' },
+    @{ Name = '流程回归';   Script = 'Test-Workflow.ps1'; Engine = 'powershell.exe' },
     @{ Name = '启动权限与升级';            Script = 'Test-Launcher.ps1'; Engine = 'powershell.exe'; Package=$true },
     @{ Name = '发布包隔离';                Script = 'Test-Package.ps1'; Engine = 'powershell.exe'; Package=$true }
 )

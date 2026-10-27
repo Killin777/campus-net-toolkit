@@ -7,7 +7,7 @@
     "src/lib/CampusPortal.ps1",
     "src/lib/CampusCheck.ps1",
     "src/lib/RouteGuard.ps1",
-    "src/lib/WifiList.ps1",
+    "src/lib/WifiList.ps1", "src/lib/WiredCheck.ps1", "src/lib/RouteRepair.ps1", "src/lib/NetworkMonitor.ps1", "src/lib/LinkHistory.ps1",
     "config/proxy-config.example.json",
     "config/campus-config.example.json",
     "assets/lingzhi.ico",
