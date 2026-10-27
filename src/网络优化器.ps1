@@ -745,6 +745,7 @@ function Update-Status {
     # 代理三态：绿=已连接且真的生效 / 灰=直连 / 红=异常
     $proxyAlive = [bool]$i.ProxyPort
     $proxyOn    = [bool]$i.ProxyOn
+    $stateColor = $C.Text   # 兜底：分支全部不命中时也不能把 null 赋给 ForeColor
     if ($proxyOn -and -not $i.ProxyKnown) {
         $stateText='代理地址待验证'; $stateColor=$C.Warn; $stateDetail='系统代理已开启，地址格式暂无法识别'
     } elseif ($proxyOn -and $proxyAlive) {
