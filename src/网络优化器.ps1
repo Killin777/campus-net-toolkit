@@ -1728,11 +1728,14 @@ function Update-NetworkMonitorUi {
         $script:lastConclusion = $c
 
         if ($lbConclusion) {
+        # 分层判定已经产出了标题时，不再由旧结论覆盖（保证单一数据源）
+        if (-not $script:layerCache) {
             $headline = [string]$c.Title
             if ($snap.Proxy) {
                 $headline += if ($snap.Proxy.Enabled) { "　·　系统代理已开启" } else { "　·　系统代理已关闭" }
             }
             $lbConclusion.Text = $headline
+        }
             $qColor = $C.Text
             switch ([string]$c.State) {
                 'Online'          { if ($C.Ok)   { $qColor = $C.Ok } }
