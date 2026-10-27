@@ -141,6 +141,80 @@ Test-Case '单个接口读不到跃点不会中断整轮备份' {
     Assert-True (@($saved.无法读取跃点) -contains 'vEthernet (Test)') '读不到跃点的接口没有被记录'
     Assert-True (-not $saved.跃点.PSObject.Properties['vEthernet (Test)']) '读不到跃点的接口被写进了跃点表'
 }
+Test-Case '校园网已联网时登录立即结束且不改代理和 DNS' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
+    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Online' }; Info=[pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true }; Quality=[pscustomobject]@{ Known=$true; Kind='Online' } }
+    $script:loginSideEffects = 0
+    function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
+    function Get-CurrentWifiSsid { 'test-campus' }
+    function Connect-CampusWifi { $true }
+    function Test-NetworkQuality { [pscustomobject]@{ Usable=$true; Kind='在线' } }
+    function Test-PortalReachable { $true }
+    function Get-NetInfo { [pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true } }
+    function Invoke-ModeFile { $script:loginSideEffects++ }
+    function Start-Process { $script:loginSideEffects++ }
+    function Set-DnsClientServerAddress { $script:loginSideEffects++ }
+    function Write-Log { }
+    Open-CampusLogin
+    Assert-True ($script:loginSideEffects -eq 0) '已联网仍打开浏览器或改变网络设置'
+}
+Test-Case '无 SSID 的有线认证不会切换 WiFi' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
+    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' }; Info=[pscustomobject]@{ ConnectionType='Ethernet'; SSID='—'; ProxyOn=$false }; Quality=[pscustomobject]@{ Known=$true; Kind='NeedsAuth' } }
+    $script:loginWifiCalls = 0; $script:loginBrowserCalls = 0
+    function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
+    function Get-CurrentWifiSsid { '' }
+    function Connect-CampusWifi { $script:loginWifiCalls++; $true }
+    function Test-NetworkQuality { [pscustomobject]@{ Usable=$false; Kind='需认证' } }
+    function Test-PortalReachable { $true }
+    function Get-NetInfo { [pscustomobject]@{ ConnectionType='Ethernet'; SSID='—'; ProxyOn=$false } }
+    function Start-Process { $script:loginBrowserCalls++ }
+    function Write-Log { }
+    Open-CampusLogin
+    Assert-True ($script:loginWifiCalls -eq 0) '有线认证切换了 WiFi'
+    Assert-True ($script:loginBrowserCalls -eq 1) '有线认证未打开已配置门户'
+}
+Test-Case '无线频段备份失败时不写入驱动' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Set-BandPreference')
+    $script:bandWrites = 0
+    function Get-WirelessAdapter { [pscustomobject]@{ Name='test-wifi' } }
+    function Get-NetAdapterAdvancedProperty { [pscustomobject]@{ RegistryKeyword='RoamingPreferredBandType'; RegistryValue=@('0') } }
+    function New-WifiBandBackup { throw '模拟备份失败' }
+    function Set-NetAdapterAdvancedProperty { $script:bandWrites++ }
+    function Add-IgnoreWindow { }
+    $thrown=$false
+    try { Set-BandPreference 2 } catch { $thrown=$true }
+    Assert-True ($thrown -and $script:bandWrites -eq 0) '备份失败仍写入频段偏好'
+}
+Test-Case '相同无线频段偏好不重复写入或备份' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Set-BandPreference')
+    $script:bandWrites = 0; $script:bandBackups = 0
+    function Get-WirelessAdapter { [pscustomobject]@{ Name='test-wifi' } }
+    function Get-NetAdapterAdvancedProperty { [pscustomobject]@{ RegistryKeyword='RoamingPreferredBandType'; RegistryValue=@('2') } }
+    function New-WifiBandBackup { $script:bandBackups++; 'test-backup.json' }
+    function Set-NetAdapterAdvancedProperty { $script:bandWrites++ }
+    function Add-IgnoreWindow { }
+    Set-BandPreference 2 | Out-Null
+    Assert-True ($script:bandWrites -eq 0 -and $script:bandBackups -eq 0) '同值重复修改或产生无用备份'
+}
+Test-Case '无线频段写后必须复检而非直接报成功' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Set-BandPreference')
+    function Get-WirelessAdapter { [pscustomobject]@{ Name='test-wifi' } }
+    function Get-NetAdapterAdvancedProperty { [pscustomobject]@{ RegistryKeyword='RoamingPreferredBandType'; RegistryValue=@('0') } }
+    function New-WifiBandBackup { 'test-backup.json' }
+    function Set-NetAdapterAdvancedProperty { }
+    function Add-IgnoreWindow { }
+    $thrown=$false
+    try { Set-BandPreference 2 } catch { $thrown=$true }
+    Assert-True $thrown '驱动忽略写入时仍报告成功'
+}
+Test-Case '版本比较只认更高版本' {
+    . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Test-NewerVersion')
+    Assert-True (Test-NewerVersion '1.4.1' 'v1.4.2') '更高的版本没有被识别'
+    Assert-True (-not (Test-NewerVersion '1.4.1' 'v1.4.1')) '相同版本被判定为更新'
+    Assert-True (-not (Test-NewerVersion '1.4.2' 'v1.4.1')) '更低版本被判定为更新'
+    Assert-True (-not (Test-NewerVersion '1.4.1' 'not-a-version')) '非法版本被当成更新'
+}
 Write-Host ("产品回归：{0} 项，{1} 个失败" -f $script:total, $script:fail)
 if ($script:fail) { exit 1 }
 exit 0
