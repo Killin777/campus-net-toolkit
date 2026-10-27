@@ -15,7 +15,7 @@
 
 function New-LayerState {
     param(
-        [ValidateSet('Ok', 'Fail', 'Unknown')][string]$State = 'Unknown',
+        [ValidateSet('Ok', 'Partial', 'Fail', 'Unknown')][string]$State = 'Unknown',
         [string]$Detail = '',
         [datetime]$At = (Get-Date),
         [int]$Passed = 0,
@@ -27,9 +27,10 @@ function New-LayerState {
 
 function Get-BadgeMark([string]$State) {
     switch ($State) {
-        'Ok' { return [char]0x25CF }    # ●
-        'Fail' { return [char]0x25CB }  # ○
-        default { return [char]0x2014 } # —
+        'Ok' { return [char]0x25CF }      # ●
+        'Partial' { return [char]0x25D0 } # ◐
+        'Fail' { return [char]0x25CB }    # ○
+        default { return [char]0x2014 }   # —
     }
 }
 
@@ -59,7 +60,7 @@ function Resolve-LayerConclusion {
         $detail = if ($dns -and $dns.Detail) { $dns.Detail } else { '域名解析失败。' }
         $suggest = '在设置里换一组 DNS，或点「DNS 优选」。'
         $severity = 'Degraded'
-    } elseif (-not $dom -or $dom.State -ne 'Ok') {
+    } elseif (-not $dom -or $dom.State -eq 'Fail' -or $dom.State -eq 'Unknown') {
         if ($auth -and $auth.Redirect) {
             $title = '链路正常 · 需要网页认证'
             $detail = if ($auth.PortalUrl) { '探测被重定向到认证页：' + $auth.PortalUrl } else { '探测被重定向，可能需要网页认证。' }
@@ -71,10 +72,20 @@ function Resolve-LayerConclusion {
             $suggest = '先做「一键体检」看丢包与延迟；若在校园网，确认是否需要认证。'
             $severity = 'Degraded'
         }
-    } elseif (-not $intl -or $intl.State -ne 'Ok') {
+    } elseif ($dom.State -eq 'Partial') {
+        $title = '链路正常 · 国内出口部分可用'
+        $detail = if ($dom.Detail) { $dom.Detail } else { '部分国内探测点失败。' }
+        $suggest = '部分国内站点不通；重试一次，若在校园网先确认是否需要认证。'
+        $severity = 'Degraded'
+    } elseif (-not $intl -or $intl.State -eq 'Fail' -or $intl.State -eq 'Unknown') {
         $title = '国内可达 · 国际不通（直连受限）'
         $detail = if ($intl -and $intl.Detail) { $intl.Detail } else { '国际探测点不可达。' }
         $suggest = '需要访问境外服务时开启代理；直连状态下这是预期结果。'
+        $severity = 'Degraded'
+    } elseif ($intl.State -eq 'Partial') {
+        $title = '国内可达 · 国际部分可达'
+        $detail = if ($intl.Detail) { $intl.Detail } else { '部分国际探测点不可达。' }
+        $suggest = '部分境外站点直连不通；需要时开启代理，其余站点可直连。'
         $severity = 'Degraded'
     } else {
         $title = '国内可达 · 国际可达'

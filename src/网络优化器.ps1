@@ -652,6 +652,9 @@ function Set-DetailSection {
     if ($State -eq 'Ok') {
         $mark = [string][char]0x25CF
         $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153)
+    } elseif ($State -eq 'Partial') {
+        $mark = [string][char]0x25D0
+        $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(251,191,36)
     } elseif ($State -eq 'Fail') {
         $mark = [string][char]0x25CB
         $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(248,113,113)
@@ -2061,6 +2064,7 @@ function Update-LayerUi {
             if (-not $label) { continue }
             $label.Text = ([string]$b.Mark) + ' ' + $b.Key
             if ($b.State -eq 'Ok') { $label.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153) }
+            elseif ($b.State -eq 'Partial') { $label.ForeColor = [System.Drawing.Color]::FromArgb(251,191,36) }
             elseif ($b.State -eq 'Fail') { $label.ForeColor = [System.Drawing.Color]::FromArgb(248,113,113) }
             else { $label.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175) }
             $label.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
@@ -2121,7 +2125,7 @@ function Update-DetailUi {
         if ($layer) {
             $layerAt = ''
             if ($layer.At) { $layerAt = ([datetime]$layer.At).ToString('HH:mm:ss') }
-            $layerSuggest = if ($layer.State -eq 'Fail') { $script:detailSuggest[$layerKey] } else { '' }
+            $layerSuggest = if ($layer.State -eq 'Fail' -or $layer.State -eq 'Partial') { $script:detailSuggest[$layerKey] } else { '' }
             Set-DetailSection $layerKey ([string]$layer.State) ([string]$layer.Detail) $layerAt $layerSuggest
             Set-DetailEndpoints $layerKey $layer.Endpoints
         } else {

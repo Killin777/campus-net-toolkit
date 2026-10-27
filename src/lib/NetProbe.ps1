@@ -127,10 +127,10 @@ function Get-LayerProbes {
         $domResults += [pscustomobject]@{ Name = [string]$point.Name; Url = [string]$point.Url; Ok = $pointOk; Ms = $lastMs }
         if ($pointOk) { $domPassed++ } else { $domFailures += $point.Name }
     }
-    $domState = if ($domPassed -eq 0) { 'Fail' } elseif ($domPassed -eq $domTotal) { 'Ok' } else { 'Ok' }
-    $domDetail = if ($domPassed -eq $domTotal) { "国内 $domTotal/$domTotal 通过" }
-                 elseif ($domPassed -gt 0) { "国内 $domPassed/$domTotal 通过（$($domFailures -join '、') 失败）" }
-                 else { '国内探测点全部失败' }
+    $domState = if ($domPassed -eq 0) { 'Fail' } elseif ($domPassed -eq $domTotal) { 'Ok' } else { 'Partial' }
+    $domDetail = if ($domPassed -eq $domTotal) { "直连探测：国内 $domTotal/$domTotal 通过" }
+                 elseif ($domPassed -gt 0) { "直连探测：国内 $domPassed/$domTotal 通过（$($domFailures -join '、') 失败）" }
+                 else { '直连探测：国内探测点全部失败' }
 
     # ---- L3 国际出口：用配置里的端点逐个测，cloudflare trace 仍校验正文 ----
     $intlPoints = @(Get-ProbeEndpoints -Layer Intl)
@@ -153,11 +153,11 @@ function Get-LayerProbes {
     $intlTotal = $intlResults.Count
     $intlPassed = @($intlResults | Where-Object { $_.Ok }).Count
     $intlFailures = @($intlResults | Where-Object { -not $_.Ok } | ForEach-Object { $_.Name })
-    $intlState = if ($intlTotal -eq 0) { 'Unknown' } elseif ($intlPassed -eq 0) { 'Fail' } else { 'Ok' }
+    $intlState = if ($intlTotal -eq 0) { 'Unknown' } elseif ($intlPassed -eq 0) { 'Fail' } elseif ($intlPassed -eq $intlTotal) { 'Ok' } else { 'Partial' }
     $intlDetail = if ($intlTotal -eq 0) { '没有配置国际探测点' }
-                  elseif ($intlPassed -eq $intlTotal) { "国际 $intlPassed/$intlTotal 通过" }
-                  elseif ($intlPassed -gt 0) { "国际 $intlPassed/$intlTotal 通过（$($intlFailures -join '、') 失败）" }
-                  else { '国际探测点全部失败' }
+                  elseif ($intlPassed -eq $intlTotal) { "直连探测：国际 $intlPassed/$intlTotal 通过" }
+                  elseif ($intlPassed -gt 0) { "直连探测：国际 $intlPassed/$intlTotal 通过（$($intlFailures -join '、') 失败）" }
+                  else { '直连探测：国际探测点全部失败' }
 
     [pscustomobject]@{
         Link     = $null    # 链路来自 NetworkMonitor，不在这里重复测

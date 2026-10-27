@@ -64,6 +64,14 @@ Assert-True ($marks.Length -eq 5) '始终输出五枚徽章'
 Assert-True ($r.Badges[3].State -eq 'Fail') '国际徽章为失败态'
 Assert-True ($r.Badges[4].State -eq 'Unknown') '代理未启用时徽章为未知'
 
+$r = Resolve-LayerConclusion (New-Layers 'Ok' 'Ok' 'Partial' 'Ok')
+Assert-True ($r.Title -match '国内出口部分可用') '国内部分通过不冒充全通'
+Assert-True ($r.Severity -eq 'Degraded') '国内部分通过属于降级'
+
+$r = Resolve-LayerConclusion (New-Layers 'Ok' 'Ok' 'Ok' 'Partial')
+Assert-True ($r.Title -match '国际部分可达') '国际部分通过单独表达'
+Assert-True ($r.Badges[3].State -eq 'Partial' -and $r.Badges[3].Mark -eq [char]0x25D0) '国际部分通过徽章为半通过'
+
 Write-Host ("分层结论：{0} 项，{1} 个失败" -f $script:total, $script:fail)
 if ($script:fail) { exit 1 }
 exit 0
