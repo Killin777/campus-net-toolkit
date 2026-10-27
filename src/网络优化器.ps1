@@ -520,93 +520,123 @@ $homePanel.Controls.Add($historyActions)
 $bTimeline = New-AppButton $historyActions '查看断链时间线' $false 190
 $bWiredHome = New-AppButton $historyActions '检查有线连接' $false 180
 
-$detailLayout = New-Object Windows.Forms.TableLayoutPanel
-$detailLayout.Dock = 'Fill'
-$detailLayout.ColumnCount = 1
-$detailLayout.RowCount = 3
-[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',270)))
-[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',105)))
-[void]$detailLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
-$detailsPage.Controls.Add($detailLayout)
-$card = New-Object Windows.Forms.TableLayoutPanel
-$card.Dock = 'Fill'
-$card.BackColor = $C.Card
-$card.Padding = New-Object Windows.Forms.Padding(12)
-$card.ColumnCount = 2
-[void]$card.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',88)))
-[void]$card.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
-$detailLayout.Controls.Add($card,0,0)
-function New-InfoRow {
-    param($Parent,[string]$Key)
-    $row = $Parent.RowCount
-    $Parent.RowCount++
-    [void]$Parent.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',11.11)))
-    $keyLabel = New-TextLabel $Parent $Key 10
-    $keyLabel.ForeColor = $C.Dim
-    $keyLabel.Margin = New-Object Windows.Forms.Padding(0)
-    $Parent.SetCellPosition($keyLabel,(New-Object Windows.Forms.TableLayoutPanelCellPosition(0,$row)))
-    $valueLabel = New-TextLabel $Parent '—' 10
-    $valueLabel.Dock = 'Fill'
-    $valueLabel.AutoSize = $false
-    $valueLabel.AutoEllipsis = $true
-    $valueLabel.Margin = New-Object Windows.Forms.Padding(0)
-    $Parent.SetCellPosition($valueLabel,(New-Object Windows.Forms.TableLayoutPanelCellPosition(1,$row)))
-    return $valueLabel
-}
-$card.RowCount = 0
-$lbSSID = New-InfoRow $card '连接'
-$lbIP = New-InfoRow $card 'IPv4 出口'
-$lbGW = New-InfoRow $card '网关'
-$lbDNS = New-InfoRow $card 'DNS'
-$lbLoss = New-InfoRow $card '采样延迟'
-$lbSignal = New-InfoRow $card '链路速率'
-$lbDrop = New-InfoRow $card '断链历史'
-$lbProxy = New-InfoRow $card '系统代理'
-$lbMode = New-InfoRow $card '质量证据'
+# ---------------- 检测详情：五段证据（链路 / DNS / 国内 / 国际 / 代理） ----------------
+$detailScroll = New-Object Windows.Forms.Panel
+$detailScroll.Dock = 'Fill'
+$detailScroll.AutoScroll = $true
+$detailScroll.BackColor = $C.Bg
+$detailsPage.Controls.Add($detailScroll)
+$detailStack = New-Object Windows.Forms.TableLayoutPanel
+$detailStack.Dock = 'Top'
+$detailStack.AutoSize = $true
+$detailStack.AutoSizeMode = 'GrowAndShrink'
+$detailStack.ColumnCount = 1
+$detailStack.RowCount = 0
+$detailStack.GrowStyle = 'AddRows'
+$detailStack.BackColor = $C.Bg
+$detailScroll.Controls.Add($detailStack)
 
-    # 分层证据（DNS / 国内 / 国际），数据来自 NetProbe 缓存
-    $lbLayerDns = New-InfoRow $card 'DNS 证据'
-    $lbLayerDom = New-InfoRow $card '国内证据'
-    $lbLayerIntl = New-InfoRow $card '国际证据'
-    $pct = [math]::Round(100 / [math]::Max(1, $card.RowCount), 3)
-    foreach ($rs in $card.RowStyles) { $rs.Height = $pct }
-    # 行数变了，把每行高度重新均分，避免最后一行被挤掉
-    $rowPct = [math]::Round(100 / [math]::Max(1, $card.RowCount), 3)
-    foreach ($rs in $card.RowStyles) { $rs.Height = $rowPct }
-$chart = New-Object Windows.Forms.Panel
-$chart.Dock = 'Fill'
-$chart.BackColor = $C.Card
-$chart.Margin = New-Object Windows.Forms.Padding(0,10,0,10)
-$detailLayout.Controls.Add($chart,0,1)
-$chart.Add_Paint({
-    param($sender,$paintArgs)
-    $graphics = $paintArgs.Graphics
-    $graphics.Clear($C.Card)
-    $brush = New-Object Drawing.SolidBrush($C.Dim)
-    $graphics.DrawString('延迟采样曲线 · 更多工具中运行延迟测试', $form.Font, $brush, 8, 6)
-    $values = @($script:samples | Where-Object { $_ -ge 0 })
-    if ($values.Count -ge 2) {
-        $maximum = [Math]::Max(($values | Measure-Object -Maximum).Maximum,30)
-        $points = @()
-        for ($sampleIndex=0; $sampleIndex -lt $values.Count; $sampleIndex++) {
-            $points += New-Object Drawing.PointF([single]($sampleIndex * ($chart.Width-16) / ($values.Count-1)+8),[single]($chart.Height-8-($values[$sampleIndex]/$maximum)*($chart.Height-35)))
-        }
-        $pen = New-Object Drawing.Pen($C.Accent,2)
-        $graphics.DrawLines($pen,[Drawing.PointF[]]$points)
-        $pen.Dispose()
+$script:detailSections = [ordered]@{}
+function New-DetailSection {
+    param($Parent,[string]$Key,[string]$Title)
+    $section = New-Object Windows.Forms.TableLayoutPanel
+    $section.Dock = 'Top'
+    $section.AutoSize = $true
+    $section.AutoSizeMode = 'GrowAndShrink'
+    $section.ColumnCount = 2
+    $section.RowCount = 3
+    [void]$section.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+    [void]$section.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',64)))
+    [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',24)))
+    [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',20)))
+    [void]$section.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+    $section.Margin = New-Object Windows.Forms.Padding(0)
+    $titleLabel = New-Object Windows.Forms.Label
+    $titleLabel.AutoSize = $false
+    $titleLabel.Dock = 'Fill'
+    $titleLabel.TextAlign = 'MiddleLeft'
+    $titleLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $titleLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',11,[Drawing.FontStyle]::Bold)
+    $section.Controls.Add($titleLabel,0,0)
+    $timeLabel = New-Object Windows.Forms.Label
+    $timeLabel.AutoSize = $false
+    $timeLabel.Dock = 'Fill'
+    $timeLabel.TextAlign = 'MiddleRight'
+    $timeLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $timeLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
+    $timeLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    $section.Controls.Add($timeLabel,1,0)
+    $evidenceLabel = New-Object Windows.Forms.Label
+    $evidenceLabel.AutoSize = $false
+    $evidenceLabel.Dock = 'Fill'
+    $evidenceLabel.AutoEllipsis = $true
+    $evidenceLabel.TextAlign = 'MiddleLeft'
+    $evidenceLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $evidenceLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',10)
+    $evidenceLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    $section.SetColumnSpan($evidenceLabel,2)
+    $section.Controls.Add($evidenceLabel,0,1)
+    $suggestLabel = New-Object Windows.Forms.Label
+    $suggestLabel.AutoSize = $false
+    $suggestLabel.Dock = 'Fill'
+    $suggestLabel.AutoEllipsis = $true
+    $suggestLabel.TextAlign = 'MiddleLeft'
+    $suggestLabel.Margin = New-Object Windows.Forms.Padding(0)
+    $suggestLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',10)
+    $suggestLabel.ForeColor = [System.Drawing.Color]::FromArgb(0xFB,0xBF,0x24)
+    $suggestLabel.Visible = $false
+    $section.SetColumnSpan($suggestLabel,2)
+    $section.Controls.Add($suggestLabel,0,2)
+    [void]$Parent.Controls.Add($section)
+    $script:detailSections[$Key] = [pscustomobject]@{
+        Title = $titleLabel; Time = $timeLabel; Evidence = $evidenceLabel; Suggest = $suggestLabel; Caption = $Title
     }
-    $brush.Dispose()
-})
-$log = New-Object Windows.Forms.RichTextBox
-$log.Dock = 'Fill'
-$log.BackColor = $C.Card
-$log.ForeColor = $C.Text
-$log.Font = New-Object Drawing.Font($form.Font.FontFamily,10)
-$log.ReadOnly = $true
-$log.BorderStyle = 'None'
-$log.DetectUrls = $false
-$log.ScrollBars = 'Vertical'
-$detailLayout.Controls.Add($log,0,2)
+}
+
+$sectionDefs = @(
+    @{ Key = 'Link';     Title = '链路' }
+    @{ Key = 'Dns';      Title = 'DNS' }
+    @{ Key = 'Domestic'; Title = '国内' }
+    @{ Key = 'Intl';     Title = '国际' }
+    @{ Key = 'Proxy';    Title = '代理' }
+)
+for ($si = 0; $si -lt $sectionDefs.Count; $si++) {
+    New-DetailSection $detailStack $sectionDefs[$si].Key $sectionDefs[$si].Title
+    if ($si -lt $sectionDefs.Count - 1) {
+        $divider = New-Object Windows.Forms.Panel
+        $divider.Dock = 'Fill'
+        $divider.Height = 1
+        $divider.BackColor = [System.Drawing.Color]::FromArgb(0x2A,0x2D,0x34)
+        $divider.Margin = New-Object Windows.Forms.Padding(0,10,0,10)
+        [void]$detailStack.Controls.Add($divider)
+    }
+}
+
+function Set-DetailSection {
+    param([string]$Key,[string]$State,[string]$Evidence,[string]$At = '',[string]$Suggest = '')
+    $entry = $script:detailSections[$Key]
+    if (-not $entry) { return }
+    if ($State -eq 'Ok') {
+        $mark = [string][char]0x25CF
+        $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153)
+    } elseif ($State -eq 'Fail') {
+        $mark = [string][char]0x25CB
+        $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(248,113,113)
+    } else {
+        $mark = [string][char]0x2014
+        $entry.Title.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175)
+    }
+    $entry.Title.Text = $mark + ' ' + $entry.Caption
+    $entry.Time.Text = $At
+    $entry.Evidence.Text = $Evidence
+    if ($Suggest) {
+        $entry.Suggest.Text = [string][char]0x2192 + ' 建议：' + $Suggest
+        $entry.Suggest.Visible = $true
+    } else {
+        $entry.Suggest.Text = ''
+        $entry.Suggest.Visible = $false
+    }
+}
 
 $repairLayout = New-Object Windows.Forms.TableLayoutPanel
 $repairLayout.Dock = 'Fill'
@@ -660,10 +690,11 @@ $repairHistoryList.Add_SelectedIndexChanged({ $bUndoRepair.Enabled = $repairHist
 $toolsLayout = New-Object Windows.Forms.TableLayoutPanel
 $toolsLayout.Dock = 'Fill'
 $toolsLayout.ColumnCount = 1
-$toolsLayout.RowCount = 3
+$toolsLayout.RowCount = 4
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',54)))
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',60)))
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',150)))
 $toolsPage.Controls.Add($toolsLayout)
 $toolsHint = New-TextLabel $toolsLayout '需要时再选择专项工具。网络写入会显示影响并按对应路径保存备份。' 11
 $toolsHint.Dock = 'Fill'
@@ -690,6 +721,68 @@ $bWired = New-AppButton $btnPanel '检查有线连接' $false 220
 $bAutoDns = New-AppButton $btnPanel '恢复当前网卡自动 DNS…' $false 220
 $bReconnect = New-AppButton $btnPanel '重新关联当前 Wi-Fi…' $false 220
 $bDirectAdvanced = New-AppButton $btnPanel '高级：原直连模式…' $false 220
+
+# 结果区：日志与曲线跟按钮同页，点完立刻能看到输出
+$outputRow = New-Object Windows.Forms.TableLayoutPanel
+$outputRow.Dock = 'Fill'
+$outputRow.ColumnCount = 2
+$outputRow.RowCount = 1
+[void]$outputRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',42)))
+[void]$outputRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',58)))
+$outputRow.Margin = New-Object Windows.Forms.Padding(0)
+$toolsLayout.Controls.Add($outputRow,0,3)
+
+$chart = New-Object Windows.Forms.Panel
+$chart.Dock = 'Fill'
+$chart.BackColor = $C.Card
+$chart.Margin = New-Object Windows.Forms.Padding(0,0,12,0)
+$outputRow.Controls.Add($chart,0,0)
+$chart.Add_Paint({
+    param($sender,$paintArgs)
+    $graphics = $paintArgs.Graphics
+    $graphics.Clear($C.Card)
+    $brush = New-Object Drawing.SolidBrush($C.Dim)
+    $graphics.DrawString('延迟采样曲线 · 点「延迟采样测试」后显示', $form.Font, $brush, 8, 6)
+    $values = @($script:samples | Where-Object { $_ -ge 0 })
+    if ($values.Count -ge 2) {
+        $maximum = [Math]::Max(($values | Measure-Object -Maximum).Maximum,30)
+        $points = @()
+        for ($sampleIndex=0; $sampleIndex -lt $values.Count; $sampleIndex++) {
+            $points += New-Object Drawing.PointF([single]($sampleIndex * ($chart.Width-16) / ($values.Count-1)+8),[single]($chart.Height-8-($values[$sampleIndex]/$maximum)*($chart.Height-35)))
+        }
+        $pen = New-Object Drawing.Pen($C.Accent,2)
+        $graphics.DrawLines($pen,[Drawing.PointF[]]$points)
+        $pen.Dispose()
+    }
+    $brush.Dispose()
+})
+
+$logGroup = New-Object Windows.Forms.TableLayoutPanel
+$logGroup.Dock = 'Fill'
+$logGroup.ColumnCount = 1
+$logGroup.RowCount = 2
+[void]$logGroup.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',20)))
+[void]$logGroup.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+$logGroup.Margin = New-Object Windows.Forms.Padding(0)
+$outputRow.Controls.Add($logGroup,1,0)
+$logTitle = New-Object Windows.Forms.Label
+$logTitle.Text = '运行日志'
+$logTitle.Dock = 'Fill'
+$logTitle.TextAlign = 'MiddleLeft'
+$logTitle.Margin = New-Object Windows.Forms.Padding(0)
+$logTitle.Font = New-Object Drawing.Font('Microsoft YaHei UI',9,[Drawing.FontStyle]::Bold)
+$logTitle.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+$logGroup.Controls.Add($logTitle,0,0)
+$log = New-Object Windows.Forms.RichTextBox
+$log.Dock = 'Fill'
+$log.BackColor = $C.Card
+$log.ForeColor = $C.Text
+$log.Font = New-Object Drawing.Font($form.Font.FontFamily,9)
+$log.ReadOnly = $true
+$log.BorderStyle = 'None'
+$log.DetectUrls = $false
+$log.ScrollBars = 'Vertical'
+$logGroup.Controls.Add($log,0,1)
 $tip = New-Object Windows.Forms.ToolTip
 $tip.AutoPopDelay = 15000
 $tip.SetToolTip($bProxyOff,'仅关闭手动系统代理；保留 PAC、DNS 与路由，先保存原值。')
@@ -738,25 +831,6 @@ function Set-Busy {
 # ============================ 状态刷新 ============================
 function Update-Status {
     $i = Get-NetInfo
-    $fam = if ($i.Band -ne '—') { ' · {0} ch{1} · {2}' -f $i.Band, $i.Channel, $i.Rssi } else { '' }
-    $lbSSID.Text = if ($i.SSID -ne '—') { "$($i.SSID)$fam" } else { '未连接无线' }
-    $lbIP.Text = '{0}   ({1}, {2})' -f $i.IP, $i.Adapter, $i.Link
-    $lbGW.Text = $i.Gateway
-    if ($i.DNS) {
-        $servers = @($i.DNS -split ',\s*' | Where-Object { $_ })
-        if ($servers.Count -gt 2) {
-            $lbDNS.Text = ($servers[0..1] -join ', ') + (" 等 {0} 个" -f $servers.Count)
-        } else {
-            $lbDNS.Text = $i.DNS
-        }
-    } else {
-        $lbDNS.Text = '自动（DHCP）'
-    }
-    $lbProxy.Text = if ($i.ProxyOn -and $i.ProxyPort) { '已开启 → ' + $i.ProxyEndpoint }
-                   elseif ($i.ProxyOn -and -not $i.ProxyPort) { '代理目标无法连接（待验证）' }
-                   elseif (-not $i.ProxyOn -and $i.ProxyPort) { '代理关闭（内核在跑）' }
-                   else { '未开启' }
-    $lbProxy.ForeColor = if ($i.ProxyOn -and -not $i.ProxyPort) { $C.Err } elseif ($i.ProxyOn) { $C.Ok } else { $C.Text }
     # 代理三态：绿=已连接且真的生效 / 灰=直连 / 红=异常
     $proxyAlive = [bool]$i.ProxyPort
     $proxyOn    = [bool]$i.ProxyOn
@@ -772,8 +846,6 @@ function Update-Status {
     } else {
         $stateText='系统代理已关闭'; $stateColor=$C.Dim; $stateDetail='手动代理已关闭；TUN、VPN 与应用代理需单独检查'
     }
-    $lbMode.Text = "状态：$stateText"
-    $lbMode.ForeColor = $stateColor
     if ($script:proxyStateLabel) {
         $script:proxyStateLabel.Text = $stateText
         $script:proxyStateLabel.ForeColor = $stateColor
@@ -790,21 +862,6 @@ function Update-Status {
         }
     }
 
-    # 信号质量判定
-    if ($i.Rssi -match '-(\d+)') {
-        $dbm = [int]$Matches[1]
-        $q = if ($dbm -le 55) { '优秀' } elseif ($dbm -le 65) { '良好' } elseif ($dbm -le 72) { '偏弱' } else { '很差' }
-        $hint = if ($dbm -gt 70) { '  · 建议换位置或用有线' } else { '' }
-        $weak = ($dbm -gt 65)
-        $linkHint = if ($weak) { '  ·  点此重连' } else { '' }
-        $lbSignal.Text = ('{0} dBm（{1}）{2}{3}' -f (-$dbm), $q, $(if ($weak) { '' } else { $hint }), $linkHint)
-        $lbSignal.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9, $(if ($weak) { [System.Drawing.FontStyle]::Underline } else { [System.Drawing.FontStyle]::Regular }))
-        $lbSignal.ForeColor = if ($dbm -le 65) { $C.Ok } elseif ($dbm -le 72) { $C.Warn } else { $C.Err }
-    } else {
-        $lbSignal.Text = '无线信号未知，或当前使用有线'
-        $lbSignal.ForeColor = $C.Ok
-    }
-
     # 弱信号持续提示：5 秒刷新一次，连续 6 次（约 30 秒）都弱才提示，且 10 分钟内只提示一次
     if ($i.Rssi -match '-(\d+)') {
         if ([int]$Matches[1] -ge 70) {
@@ -812,42 +869,13 @@ function Update-Status {
             $dueHint = (-not $script:weakHintAt) -or (((Get-Date) - $script:weakHintAt).TotalMinutes -ge 10)
             if ($script:weakHits -eq 6 -and $dueHint) {
                 $script:weakHintAt = Get-Date
-                Write-Log ('信号持续偏弱（-' + [int]$Matches[1] + ' dBm）。点上面带下划线的「信号」一行即可重连' ) 'warn'
+                Write-Log ('信号持续偏弱（-' + [int]$Matches[1] + ' dBm）。建议靠近路由器，或改用有线。') 'warn'
             }
         } else { $script:weakHits = 0 }
     }
-    # 今日断链次数
-    $dc = Get-DisconnectCount
-    if ($dc -lt 0) {
-        $lbDrop.Text = '—'
-    } elseif ($dc -eq 0) {
-        $lbDrop.Text = '今日 0 次（稳定）'
-    } else {
-        $txtDrop = '今日 {0} 次' -f $dc
-        if ($script:dropCache.Seconds -gt 0) { $txtDrop += ('，累计中断 {0}' -f (Format-Span $script:dropCache.Seconds)) }
-        $txtDrop += ' —— 频繁掉线建议报修'
-        if ($script:dropCache.Ignored -gt 0) { $txtDrop += ('（已排除 {0} 次工具操作）' -f $script:dropCache.Ignored) }
-        if ($script:dropCache.Merged -gt 0) { $txtDrop += ('（已合并 {0} 次重复记录）' -f $script:dropCache.Merged) }
-        $lbDrop.Text = $txtDrop
-    }
-    $lbDrop.ForeColor = if ($dc -eq 0) { $C.Ok } elseif ($dc -le 3) { $C.Warn } else { $C.Err }
     # 页脚时间戳
 $foot.Text = ('最后更新 {0}  ·  点击此处查看使用说明' -f (Get-Date).ToString('HH:mm:ss'))
     return $i
-}
-
-function Update-LatencyLabel {
-    param($m)
-    if ($m.Avg -lt 0) {
-        $lbLoss.Text = 'ICMP 全部超时（连通性待确认）'
-        $lbLoss.ForeColor = $C.Err
-        return
-    }
-    $text = '平均 {0} ms · 抖动 {1} ms · 丢包 {2}%' -f $m.Avg, $m.Jitter, $m.Loss
-    $lbLoss.Text = $text
-    if ($m.Loss -gt 0 -or $m.Jitter -gt 30) { $lbLoss.ForeColor = $C.Err }
-    elseif ($m.Jitter -gt 12 -or $m.Avg -gt 60) { $lbLoss.ForeColor = $C.Warn }
-    else { $lbLoss.ForeColor = $C.Ok }
 }
 
 # ============================ 操作 ============================
@@ -886,9 +914,10 @@ function Invoke-Check {
     try {
         Write-Log '开始体检 ...' 'dim'
         $i = Update-Status
-        Write-Log ("无线: {0}" -f $lbSSID.Text)
-        Write-Log ("地址: {0}" -f $lbIP.Text)
-        Write-Log ("网关: {0}    DNS: {1}" -f $i.Gateway, $lbDNS.Text)
+        $wireless = if ($i.SSID -ne '—') { $i.SSID + ' · ' + $i.Band + ' ch' + $i.Channel + ' · ' + $i.Rssi } else { '未连接无线' }
+        Write-Log ("无线: {0}" -f $wireless)
+        Write-Log ("地址: {0}   ({1}, {2})" -f $i.IP, $i.Adapter, $i.Link)
+        Write-Log ("网关: {0}    DNS: {1}" -f $i.Gateway, $i.DNS)
 
         if ($i.Gateway -and $i.Gateway -ne '—') {
             Write-Log '测试到网关的延迟 ...' 'dim'
@@ -896,7 +925,6 @@ function Invoke-Check {
             $script:samples.Clear()
             foreach ($s in $m.Samples) { [void]$script:samples.Add($s) }
             $chart.Invalidate()
-            Update-LatencyLabel $m
             Write-Log ('网关延迟: 平均 {0}ms / 抖动 {1}ms / 丢包 {2}%' -f $m.Avg, $m.Jitter, $m.Loss) $(if ($m.Loss -gt 0 -or $m.Jitter -gt 30) { 'err' } elseif ($m.Jitter -gt 12) { 'warn' } else { 'ok' })
         }
 
@@ -1033,7 +1061,6 @@ function Invoke-LatencyTest {
         }
         foreach ($s in $m.Samples) { [void]$script:samples.Add($s) }
         $chart.Invalidate()
-        Update-LatencyLabel $m
         Write-Log ('结果：平均 {0}ms · 抖动 {1}ms · 最大 {2}ms · 丢包 {3}%' -f $m.Avg, $m.Jitter, $m.Max, $m.Loss) $(if ($m.Loss -gt 0 -or $m.Jitter -gt 30) { 'err' } elseif ($m.Jitter -gt 12) { 'warn' } else { 'ok' })
         if ($m.Jitter -gt 30) {
             Write-Log '抖动偏大：多半是无线链路或热点拥塞，建议换 5GHz 热点 / 用有线' 'warn'
@@ -1862,11 +1889,7 @@ function Update-LayerUi {
         else { $lbConclusion.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175) }
     }
     if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
-        try {
-        if ($lbLayerDns) { $lbLayerDns.Text = [string]$cache.Dns.Detail }
-        if ($lbLayerDom) { $lbLayerDom.Text = [string]$cache.Domestic.Detail }
-        if ($lbLayerIntl) { $lbLayerIntl.Text = [string]$cache.Intl.Detail }
-    } catch { }if ($script:badgeLabels) {
+    if ($script:badgeLabels) {
         foreach ($b in $c.Badges) {
             $label = $script:badgeLabels[$b.Key]
             if (-not $label) { continue }
@@ -1877,6 +1900,87 @@ function Update-LayerUi {
             $label.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
         }
     }
+}
+
+# ---------- 检测详情五段：链路 / DNS / 国内 / 国际 / 代理 ----------
+$script:detailSuggest = @{
+    Link     = '检查无线是否连接到目标网络，或插好网线。'
+    Dns      = '在「更多工具」里运行「DNS 优选」，或手动换一组 DNS。'
+    Domestic = '先运行「校园网体检」，若在校园网再确认是否需要认证。'
+    Intl     = '需要访问境外服务时开启代理；直连状态下这是预期结果。'
+    Proxy    = '启动代理客户端，或关闭手动系统代理。'
+}
+
+function Update-DetailUi {
+    if (-not $script:detailSections) { return }
+    $snap = $script:lastSnapshot
+    $cache = $script:layerCache
+
+    # 链路：直接用后台快照，不额外发请求
+    $linkState = 'Unknown'
+    $linkAt = ''
+    $linkEvidence = '— 未验证'
+    if ($snap) {
+        $conn = $snap.Connection
+        $info = $snap.Info
+        if ($conn) {
+            if ($conn.CheckedAt) { $linkAt = ([datetime]$conn.CheckedAt).ToString('HH:mm:ss') }
+            if ($conn.Known) {
+                if ($conn.Connected) { $linkState = 'Ok' } else { $linkState = 'Fail' }
+            }
+        }
+        if ($conn -and $conn.Known -and -not $conn.Connected) {
+            $linkEvidence = [string]$conn.Detail
+        } elseif ($conn -and $conn.Connected) {
+            $parts = @()
+            $adapterName = [string]$info.Adapter
+            if ([string]::IsNullOrWhiteSpace($adapterName) -or $adapterName -eq '—') { $adapterName = '未识别网卡' }
+            $parts += '网卡 ' + $adapterName
+            if ([string]$info.SSID -and [string]$info.SSID -ne '—') { $parts += [string]$info.SSID }
+            if ([string]$info.Rssi -and [string]$info.Rssi -ne '—') { $parts += [string]$info.Rssi }
+            if ([string]$info.Gateway -and [string]$info.Gateway -ne '—') { $parts += '网关 ' + [string]$info.Gateway }
+            $ping = $snap.GatewayPing
+            if ($ping -and $ping.Known) {
+                if ($ping.Success) { $parts += ([string]$ping.Milliseconds + 'ms') } else { $parts += '网关未回应 ICMP' }
+            }
+            $linkEvidence = $parts -join ' · '
+        }
+    }
+    $linkSuggest = if ($linkState -eq 'Fail') { $script:detailSuggest.Link } else { '' }
+    Set-DetailSection 'Link' $linkState $linkEvidence $linkAt $linkSuggest
+
+    foreach ($layerKey in @('Dns','Domestic','Intl')) {
+        $layer = $null
+        if ($cache) { $layer = $cache.$layerKey }
+        if ($layer) {
+            $layerAt = ''
+            if ($layer.At) { $layerAt = ([datetime]$layer.At).ToString('HH:mm:ss') }
+            $layerSuggest = if ($layer.State -eq 'Fail') { $script:detailSuggest[$layerKey] } else { '' }
+            Set-DetailSection $layerKey ([string]$layer.State) ([string]$layer.Detail) $layerAt $layerSuggest
+        } else {
+            Set-DetailSection $layerKey 'Unknown' '— 未验证'
+        }
+    }
+
+    # 代理：系统代理状态与端口监听
+    $proxyState = 'Unknown'
+    $proxyAt = ''
+    $proxyEvidence = '— 未验证'
+    if ($snap -and $snap.Proxy) {
+        $p = $snap.Proxy
+        if ($p.CheckedAt) { $proxyAt = ([datetime]$p.CheckedAt).ToString('HH:mm:ss') }
+        $portText = '端口 ' + [string]$p.Port
+        if ($p.Known) {
+            if ($p.Enabled) {
+                if ($p.Alive) { $proxyState = 'Ok'; $proxyEvidence = $portText + ' 正在监听 · 出口未验证' }
+                else { $proxyState = 'Fail'; $proxyEvidence = $portText + ' 未监听' }
+            } else {
+                $proxyEvidence = $portText + ' · 未启用，未检查监听'
+            }
+        }
+    }
+    $proxySuggest = if ($proxyState -eq 'Fail') { $script:detailSuggest.Proxy } else { '' }
+    Set-DetailSection 'Proxy' $proxyState $proxyEvidence $proxyAt $proxySuggest
 }
 
 
@@ -2822,7 +2926,7 @@ $bCheck.Add_Click({ Invoke-Check })
     $script:monitorErrAt = [datetime]::MinValue
     $script:monitorUiTimer = New-Object System.Windows.Forms.Timer
     $script:monitorUiTimer.Interval = 1000
-    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi; Update-LayerUi })
+    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi; Update-LayerUi; Update-DetailUi })
     $script:monitorUiTimer.Start()
 
     $bPrimary.Add_Click({
@@ -2943,14 +3047,63 @@ $log.Focus() | Out-Null
     }
 })
 
+# 预览数据：只给 -Screenshot 出图用，不发请求、不改系统
+function New-PreviewState {
+    param([string]$Scenario)
+    $now = Get-Date
+    $connected = ($Scenario -ne 'Offline')
+    $info = [ordered]@{
+        SSID = 'CampusNet'; Band = '5 GHz'; Channel = '149'; Signal = '82%'; Rssi = '-58 dBm'
+        IP = '10.21.36.88'; Gateway = '10.21.36.1'; DNS = '10.21.0.2, 223.5.5.5'
+        Adapter = 'WLAN'; Link = '866 Mbps'; ProxyOn = $false; ProxyPort = $false
+        ProxyNum = 7897; ProxyKnown = $true; ProxyEndpoint = ''; PacUrl = ''
+        ConnectionType = 'Wireless'; InterfaceIndex = 12; LinkSpeedMbps = 866
+    }
+    $connection = [pscustomobject]@{
+        Known = $true; Connected = $connected; CheckedAt = $now; ConnectionType = 'Wireless'
+        Detail = $(if ($connected) { '已识别的物理网卡处于连接状态；这不证明外网可用。' } else { '已识别的物理接口均未连接；虚拟网卡状态未用于证明物理在线。' })
+    }
+    $proxyEnabled = ($Scenario -eq 'ProxyIssue')
+    $proxy = [pscustomobject]@{
+        Known = $true; Enabled = $proxyEnabled; Alive = $false; IsLocal = $true; TargetKnown = $true
+        Port = 7897; Host = '127.0.0.1'; CheckedAt = $now
+        Detail = $(if ($proxyEnabled) { '实际本机代理目标端口没有监听。' } else { '手动系统代理已关闭；不代表所有应用均为直连。' })
+    }
+    $ping = [pscustomobject]@{
+        Known = $connected; Success = $connected; Milliseconds = 4; CheckedAt = $now
+        Detail = '网关回应ICMP；不代表互联网可用。'
+    }
+    $script:lastSnapshot = [pscustomobject]@{
+        Info = $info; Connection = $connection; Proxy = $proxy; GatewayPing = $ping
+        CheckedAt = $now; Errors = @(); Quality = $null
+    }
+    $dnsState = 'Ok'; $domState = 'Ok'; $intlState = 'Ok'
+    if ($Scenario -in @('NeedsAuth','Unknown','Offline')) { $dnsState = 'Unknown'; $domState = 'Unknown' }
+    if ($Scenario -in @('ExternalFailure','Unknown','Offline')) { $intlState = 'Unknown' }
+    if ($Scenario -eq 'NeedsAuth') { $dnsState = 'Ok'; $domState = 'Fail' }
+    if ($Scenario -eq 'ExternalFailure') { $intlState = 'Fail' }
+    $script:layerCache = [pscustomobject]@{
+        Dns = New-LayerState -State $dnsState -Detail $(if ($dnsState -eq 'Ok') { '国内外域名均可解析' } else { '域名解析失败' }) -At $now
+        Domestic = New-LayerState -State $domState -Detail $(if ($domState -eq 'Fail') { '国内 2/3 通过（腾讯 失败）' } else { '国内 3/3 通过' }) -At $now -Passed 3 -Total 3
+        Intl = New-LayerState -State $intlState -Detail $(if ($intlState -eq 'Fail') { '国际探测点不可达' } else { 'cloudflare trace 可达' }) -At $now
+        At = $now
+    }
+}
+
 if ($Screenshot) {
     $form.Show()
     [System.Windows.Forms.Application]::DoEvents()
-    # -Details / -Repairs 与 -Screenshot 组合，用于抓取非首页的界面
+    # -Details / -Repairs / -Tools 与 -Screenshot 组合，用于抓取非首页的界面
+    if ($PreviewScenario) {
+        $script:monitorUiTimer.Stop()
+        New-PreviewState $PreviewScenario
+    }
     if ($Details) { Show-Page 1 }
     elseif ($Repairs) { Show-Page 2 }
     elseif ($Tools) { Show-Page 3 }
     Update-Status | Out-Null
+    if ($PreviewScenario) { Update-LayerUi }
+    Update-DetailUi
     Write-Log '界面预览' 'dim'
     Write-Log '示例日志行' 'ok'
     Start-Sleep -Milliseconds 700
