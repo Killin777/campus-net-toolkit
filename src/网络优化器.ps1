@@ -2661,9 +2661,12 @@ function Invoke-LibCheck {
     $path = Join-Path $PSScriptRoot $Script
     if (-not (Test-Path $path)) { Write-Log ("缺少 " + $Script) 'err'; return }
     Set-Busy $true
+        # 检查结果写在日志面板（更多工具页），先切过去，否则用户看不到任何反应
+        try { if ($pages -and $pages.TabPages.Count -gt 3) { $pages.SelectedIndex = 3 } } catch { }
     try {
         Write-Log ($Title + '（约 10~20 秒）...') 'dim'
         $res = Invoke-ChildCapture -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $path, 'check')
+        Write-Log ($Title + (' 完成，共 ' + @($res.Lines).Count + ' 行')) 'ok'
         foreach ($line in $res.Lines) {
             $t = ([string]$line).TrimEnd()
             if ([string]::IsNullOrWhiteSpace($t)) { continue }
