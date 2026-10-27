@@ -20,6 +20,12 @@ function Test-Case($name, [scriptblock]$test) {
     try { & $test; Write-Host ('  PASS ' + $name) }
     catch { $script:fail++; Write-Host ('  FAIL ' + $name + ' : ' + $_.Exception.Message) -ForegroundColor Red }
 }
+function Import-Function($path, $name) {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+    $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (-not $fn) { throw "Missing function: $name" }
+    return [scriptblock]::Create($fn.Extent.Text)
+}
 function New-FixtureSnapshot([datetime]$at, [bool]$connected = $true) {
     return [pscustomobject]@{
         CheckedAt = $at
@@ -399,6 +405,43 @@ Test-Case '代理轻读的重复连接证据不抬高断链观察精度' {
     $s.CheckedAt=$at.AddSeconds(35)
     $result = Update-LinkObservationTracker $tracker $s
     Assert-True ($result.Tracker.LastObservedAt -eq $at.AddSeconds(30) -and $null -eq $result.Event) '代理轮被当作新网卡观测'
+}
+
+Test-Case '工具自愈的断链不写入断链记录' {
+    $main = Join-Path $root 'src\网络优化器.ps1'
+    . (Import-Function $main 'Invoke-WifiWatchdog')
+    $script:wifiWatchBusy = $false
+    $script:wifiDownSince = (Get-Date).AddSeconds(-59)
+    $script:wifiDownByTool = $true
+    $script:recordedKinds = @()
+    function Get-NetworkReachability { [pscustomobject]@{ Up=$true; Gateway='192.0.2.1'; Reason='' } }
+    function Add-LinkEvent { param($Kind,$Seconds,[switch]$Estimate,[int]$LowerBoundSeconds) $script:recordedKinds += $Kind }
+    function Write-Log { param($Msg,$Level) }
+    Invoke-WifiWatchdog
+    Assert-True ($script:recordedKinds.Count -eq 0 -and -not $script:wifiDownSince) '工具自愈仍写入断链或未清理状态'
+}
+Test-Case '真实断链按采样估计写入' {
+    $main = Join-Path $root 'src\网络优化器.ps1'
+    . (Import-Function $main 'Invoke-WifiWatchdog')
+    $script:wifiWatchBusy = $false
+    $script:wifiDownSince = (Get-Date).AddSeconds(-30)
+    $script:wifiDownByTool = $false
+    $script:recorded = @()
+    function Get-NetworkReachability { [pscustomobject]@{ Up=$true; Gateway='192.0.2.1'; Reason='' } }
+    function Test-LinkIgnoreWindow { param($Start,$End) return $false }
+    function Add-LinkEvent { param($Kind,$Seconds,[switch]$Estimate,[int]$LowerBoundSeconds) $script:recorded += [pscustomobject]@{ Kind=$Kind; Seconds=$Seconds; Estimate=[bool]$Estimate } }
+    function Write-Log { param($Msg,$Level) }
+    Invoke-WifiWatchdog
+    Assert-True ($script:recorded.Count -eq 1 -and $script:recorded[0].Kind -eq '断链' -and $script:recorded[0].Estimate) '真实断链没有按采样估计记录'
+}
+
+Test-Case '维护窗口判断覆盖相交区间' {
+    Assert-Api 'Test-LinkIgnoreWindow'
+    $now = Get-Date
+    Write-FixtureJson 'runtime\link-events-ignore.json' @(@{ start=$now.AddSeconds(-30).ToString('o'); end=$now.AddSeconds(30).ToString('o'); reason='测试' })
+    Assert-True (Test-LinkIgnoreWindow -Start $now -End $now.AddSeconds(5)) '窗口内区间未被识别'
+    Assert-True (Test-LinkIgnoreWindow -Start $now.AddSeconds(-60) -End $now.AddSeconds(-10)) '与窗口相交的区间未被识别'
+    Assert-True (-not (Test-LinkIgnoreWindow -Start $now.AddMinutes(-10) -End $now.AddMinutes(-9))) '窗口外区间被误判'
 }
 
 Write-Host ('后台与断链回归：{0} 项，{1} 个失败' -f $script:total,$script:fail)

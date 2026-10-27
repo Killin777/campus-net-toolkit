@@ -113,6 +113,16 @@ function Get-LinkIgnoreWindows {
     return [pscustomobject]@{ Windows=@($windows.ToArray()); Known=($errorText -eq ''); Error=$errorText }
 }
 
+function Test-LinkIgnoreWindow {
+    param([datetime]$Start,[datetime]$End)
+    $ignore = Get-LinkIgnoreWindows
+    if (-not $ignore.Known) { return $false }
+    foreach ($window in $ignore.Windows) {
+        if ($Start -le $window.End -and $End -ge $window.Start) { return $true }
+    }
+    return $false
+}
+
 function Merge-LinkHistory {
     param(
         [object[]]$ToolRecords = @(),

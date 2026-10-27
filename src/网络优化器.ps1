@@ -2238,21 +2238,32 @@ function Invoke-WifiWatchdog {
         $reach = Get-NetworkReachability
         if ($reach.Up) {
             if ($script:wifiDownSince) {
-                $secs = [int]((Get-Date) - $script:wifiDownSince).TotalSeconds
-                if ($secs -ge 10) {
-                    Add-LinkEvent '断链' $secs
-                    Write-Log ("网络已恢复（中断 $secs 秒，记为断链）") 'warn'
+                $now = Get-Date
+                $secs = [int]($now - $script:wifiDownSince).TotalSeconds
+                $toolHealed = [bool]$script:wifiDownByTool
+                $inWindow = $false
+                if (-not $toolHealed) { $inWindow = Test-LinkIgnoreWindow -Start $script:wifiDownSince -End $now }
+                if ($toolHealed -or $inWindow) {
+                    Write-Log ("网络已恢复（中断约 $secs 秒；期间在工具维护窗口内，不计入断链）") 'dim'
+                } elseif ($secs -ge 10) {
+                    Add-LinkEvent '断链' $secs -Estimate -LowerBoundSeconds $secs
+                    Write-Log ("网络已恢复（中断约 $secs 秒，按 15 秒采样估计，记为断链）") 'warn'
                 } else {
                     Add-LinkEvent '抖动' $secs
-                    Write-Log ("网络短暂中断 $secs 秒（抖动，不计入断链）") 'dim'
+                    Write-Log ("网络短暂中断约 $secs 秒（抖动，不计入断链）") 'dim'
                 }
                 $script:wifiDownSince = $null
+                $script:wifiDownByTool = $false
             }
             return
         }
 
         if (-not $script:wifiDownSince) {
-            $script:wifiDownSince = Get-Date
+            $now = Get-Date
+            # 工具自己的操作（重连/登录/急救）本来就会短暂断网，窗口内不新建断链会话
+            if (Test-LinkIgnoreWindow -Start $now.AddSeconds(-15) -End $now) { return }
+            $script:wifiDownSince = $now
+            $script:wifiDownByTool = $false
             Write-Log ("检测到断网：" + $reach.Reason) 'warn'
             return
         }
@@ -2272,7 +2283,8 @@ function Invoke-WifiWatchdog {
         if ($order.Count -eq 0) { return }
 
         Add-IgnoreWindow '自动重连' 60
-        Write-Log ("已断网 " + [int]$downFor + " 秒，按列表尝试重连 ...") 'warn'
+        $script:wifiDownByTool = $true
+        Write-Log ("已断网约 " + [int]$downFor + " 秒，按列表尝试重连 ...") 'warn'
         foreach ($n in $order) {
             if (-not (Test-WifiInRange $n.ssid)) { continue }
             Write-Log ("  尝试 " + $n.ssid) 'dim'
@@ -2283,15 +2295,28 @@ function Invoke-WifiWatchdog {
             $q = Test-NetworkQuality
             if ($q.Usable) {
                 Write-Log ("  已重连到 " + $n.ssid + "（" + $q.Kind + "）") 'ok'
+                if ($script:wifiDownSince) {
+                    $secs = [int]((Get-Date) - $script:wifiDownSince).TotalSeconds
+                    Write-Log ("网络已恢复（中断约 $secs 秒；由工具重连，不计入断链）") 'dim'
+                    $script:wifiDownSince = $null
+                    $script:wifiDownByTool = $false
+                }
                 return
             }
             if ($q.Kind -eq '需认证' -and $n.campus) {
                 Write-Log ("  已连上 " + $n.ssid + "，但需要校园网认证（" + $q.Detail + "）") 'warn'
                 Write-Log '  点「校园网登录」完成认证' 'dim'
+                if ($script:wifiDownSince) {
+                    $secs = [int]((Get-Date) - $script:wifiDownSince).TotalSeconds
+                    Write-Log ("网络已恢复（中断约 $secs 秒；由工具重连，不计入断链）") 'dim'
+                    $script:wifiDownSince = $null
+                    $script:wifiDownByTool = $false
+                }
                 return
             }
             Write-Log ("  " + $n.ssid + " 是假联网（" + $q.Kind + "：" + $q.Detail + "），继续下一个") 'warn'
         }
+        $script:wifiDownByTool = $false
         Write-Log '列表里的网络都连不上，等下一轮' 'err'
     } catch {
         # 看门狗自身不能把界面拖垮
