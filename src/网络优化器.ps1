@@ -46,6 +46,8 @@ if ($DataDirectory) { $script:DataRoot = $DataDirectory }
 
 # 共享工具函数（文本宽度、输出、Ping、维护窗口）
 . (Join-Path $PSScriptRoot 'lib\Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\NetLayers.ps1')
+. (Join-Path $PSScriptRoot 'lib\NetProbe.ps1')
 . (Join-Path $PSScriptRoot 'lib\NetworkMonitor.ps1')
 . (Join-Path $PSScriptRoot 'lib\LinkHistory.ps1')
 . (Join-Path $PSScriptRoot 'lib\RouteRepair.ps1')
@@ -466,6 +468,21 @@ $lbConclusion.Margin = New-Object Windows.Forms.Padding(0,12,0,14)
 $lbConclusionDetail = New-TextLabel $homePanel '正在后台读取连接与代理证据，界面可继续使用。' 11
 $lbConclusionDetail.Margin = New-Object Windows.Forms.Padding(0,0,0,16)
 $lbCheckedAt = New-TextLabel $homePanel '检测证据：尚未取得' 10
+
+    # 五枚状态徽章：● 通过 / ○ 失败 / — 未验证，点击跳到检测详情
+    $badgeBar = New-Object Windows.Forms.FlowLayoutPanel
+    $badgeBar.AutoSize = $true
+    $badgeBar.Dock = 'Fill'
+    $badgeBar.Margin = New-Object Windows.Forms.Padding(0,0,0,12)
+    $homePanel.Controls.Add($badgeBar)
+    $script:badgeLabels = @{}
+    foreach ($key in @('链路','DNS','国内','国际','代理')) {
+        $bl = New-TextLabel $badgeBar ([string]([char]0x2014) + ' ' + $key) 10
+        $bl.Margin = New-Object Windows.Forms.Padding(0,0,18,0)
+        $bl.Cursor = 'Hand'
+        $bl.Add_Click({ if ($pages) { $pages.SelectedTab = $detailsPage } })
+        $script:badgeLabels[$key] = $bl
+    }
 $lbCheckedAt.ForeColor = $C.Dim
 $primaryActions = New-Object Windows.Forms.FlowLayoutPanel
 $primaryActions.AutoSize = $true
@@ -1757,6 +1774,80 @@ function Update-NetworkMonitorUi {
     }
 }
 
+# ---------- 分层探测（后台 runspace，60 秒一次） ----------
+$script:layerCache = $null
+$script:layerWork = $null
+$script:layerAt = [datetime]::MinValue
+$script:layerRuns = 0
+
+function Start-LayerProbe {
+    if ($script:layerWork) { return }
+    $root = $script:ProjRoot
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript("& { . '$root\src\lib\NetLayers.ps1'; . '$root\src\lib\NetProbe.ps1'; Get-LayerProbes }")
+    $script:layerWork = [pscustomobject]@{ PowerShell = $ps; Handle = $ps.BeginInvoke() }
+}
+
+function Receive-LayerProbe {
+    if (-not $script:layerWork) { return }
+    if (-not $script:layerWork.Handle.IsCompleted) { return }
+    try {
+        $out = $script:layerWork.PowerShell.EndInvoke($script:layerWork.Handle)
+        if ($out -and $out.Count -gt 0 -and $out[-1]) { $script:layerCache = $out[-1] }
+    } catch {
+    } finally {
+        try { $script:layerWork.PowerShell.Dispose() } catch { }
+        $script:layerWork = $null
+        $script:layerAt = Get-Date
+    }
+}
+
+function Update-LayerUi {
+    Receive-LayerProbe
+    if (((Get-Date) - $script:layerAt).TotalSeconds -ge 60) { Start-LayerProbe }
+
+    $cache = $script:layerCache
+    if (-not $cache) { return }
+
+    $snap = $script:lastSnapshot
+    $linkOk = $snap -and $snap.Connection -and $snap.Connection.Connected
+    $proxyOn = $snap -and $snap.Proxy -and $snap.Proxy.Enabled
+    $proxyAlive = $snap -and $snap.Proxy -and $snap.Proxy.Alive
+
+    $layers = [pscustomobject]@{
+        Link     = (New-LayerState -State $(if ($linkOk) { 'Ok' } else { 'Fail' }) -Detail '网卡连接状态')
+        Dns      = $cache.Dns
+        Domestic = $cache.Domestic
+        Intl     = $cache.Intl
+        Proxy    = [pscustomobject]@{ Enabled = [bool]$proxyOn; Alive = [bool]$proxyAlive; Protocol = ''; Exit = '' }
+        Auth     = [pscustomobject]@{ Redirect = $false; PortalUrl = '' }
+    }
+    $c = Resolve-LayerConclusion -Layers $layers
+
+    if ($lbConclusion) {
+        $lbConclusion.Text = $c.Title
+        $lbConclusion.ForeColor = switch ($c.Severity) {
+            'Ok'        { $C.Ok }
+            'Degraded'  { $C.Warn }
+            'NeedsAuth' { $C.Warn }
+            default     { $C.Dim }
+        }
+    }
+    if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
+    if ($script:badgeLabels) {
+        foreach ($b in $c.Badges) {
+            $label = $script:badgeLabels[$b.Key]
+            if (-not $label) { continue }
+            $label.Text = ([string]$b.Mark) + ' ' + $b.Key
+            $label.ForeColor = switch ($b.State) {
+                'Ok'   { $C.Ok }
+                'Fail' { $C.Err }
+                default { $C.Dim }
+            }
+        }
+    }
+}
+
 
 function Invoke-WifiWatchdog {
     # 断链判定：
@@ -2065,7 +2156,9 @@ function Show-WifiListWindow {
             & $script:UpdateWifiArrows
         }
         [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds $(if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 })
+        $waitMs = if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 }
+        $deadline = (Get-Date).AddMilliseconds($waitMs)
+        while ((Get-Date) -lt $deadline) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
         [System.Windows.Forms.Application]::DoEvents()
         if (-not ('W2.Gdi' -as [type])) {
             Add-Type -Namespace W2 -Name Gdi -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);'
@@ -2602,7 +2695,9 @@ function Show-HelpWindow {
         }
         $w.Show()
         [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds $(if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 })
+        $waitMs = if ($env:CAMPUS_NET_CAPTURE_WAIT) { [int]$env:CAMPUS_NET_CAPTURE_WAIT } else { 600 }
+        $deadline = (Get-Date).AddMilliseconds($waitMs)
+        while ((Get-Date) -lt $deadline) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
         [System.Windows.Forms.Application]::DoEvents()
         $bmp = New-Object System.Drawing.Bitmap($w.Width, $w.Height)
         $gfx = [System.Drawing.Graphics]::FromImage($bmp)
@@ -2693,7 +2788,7 @@ $bCheck.Add_Click({ Invoke-Check })
     $script:monitorErrAt = [datetime]::MinValue
     $script:monitorUiTimer = New-Object System.Windows.Forms.Timer
     $script:monitorUiTimer.Interval = 1000
-    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi })
+    $script:monitorUiTimer.Add_Tick({ Update-NetworkMonitorUi; Update-LayerUi })
     $script:monitorUiTimer.Start()
 
     $bPrimary.Add_Click({
