@@ -791,23 +791,42 @@ $toolsLayout = New-Object Windows.Forms.TableLayoutPanel
 $toolsLayout.Dock = 'Fill'
 $toolsLayout.ColumnCount = 1
 $toolsLayout.RowCount = 3
-[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',54)))
-[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',200)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',40)))
 [void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+[void]$toolsLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',110)))
 $toolsPage.Controls.Add($toolsLayout)
-$toolsHint = New-TextLabel $toolsLayout '按「检查 → 连接 → 修复」排列：扫描都是只读，写入类动作会先备份并二次确认。' 11
+$toolsHint = New-TextLabel $toolsLayout '按「检查 → 连接 → 修复」分组：检查类只读；写入类动作会先备份并二次确认。' 11
 $toolsHint.Dock = 'Fill'
 $btnPanel = New-Object Windows.Forms.FlowLayoutPanel
 $btnPanel.Dock = 'Fill'
 $btnPanel.AutoScroll = $true
 $toolsLayout.Controls.Add($btnPanel,0,1)
+
+function New-ToolGroupLabel {
+    param([string]$Text)
+    $label = New-Object Windows.Forms.Label
+    $label.Text = $Text
+    $label.AutoSize = $true
+    $label.Margin = New-Object Windows.Forms.Padding(0,6,0,0)
+    $label.Font = New-Object Drawing.Font('Microsoft YaHei UI',9,[Drawing.FontStyle]::Bold)
+    $label.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    $btnPanel.Controls.Add($label)
+    $btnPanel.SetFlowBreak($label,$true)
+    return $label
+}
+
+[void](New-ToolGroupLabel '检查')
 $bCheck = New-AppButton $btnPanel '详细连接体检' $false 220
 $bOpt = New-AppButton $btnPanel '校园网体检' $false 220
 $bDns = New-AppButton $btnPanel 'DNS 优选（备份后应用）' $false 220
 $bLatency = New-AppButton $btnPanel '延迟采样测试' $false 220
 $bReport = New-AppButton $btnPanel '导出诊断报告' $false 220
+$btnPanel.SetFlowBreak($bReport,$true)
+[void](New-ToolGroupLabel '连接')
 $bSystemProxy = New-AppButton $btnPanel '系统代理 ▾' $false 220
 $bProxy = New-AppButton $btnPanel '打开校园网登录页' $false 220
+$btnPanel.SetFlowBreak($bProxy,$true)
+[void](New-ToolGroupLabel '修复')
 $bRescue = New-AppButton $btnPanel '网络急救 ▾' $false 220
 $bRestore = New-AppButton $btnPanel '还原与备份 ▾' $false 220
 
