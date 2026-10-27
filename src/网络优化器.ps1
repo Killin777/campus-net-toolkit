@@ -558,6 +558,12 @@ $lbDrop = New-InfoRow $card '断链历史'
 $lbProxy = New-InfoRow $card '系统代理'
 $lbMode = New-InfoRow $card '质量证据'
 
+    # 分层证据（DNS / 国内 / 国际），数据来自 NetProbe 缓存
+    $lbLayerDns = New-InfoRow $card 'DNS 证据'
+    $lbLayerDom = New-InfoRow $card '国内证据'
+    $lbLayerIntl = New-InfoRow $card '国际证据'
+    $pct = [math]::Round(100 / [math]::Max(1, $card.RowCount), 3)
+    foreach ($rs in $card.RowStyles) { $rs.Height = $pct }
     # 行数变了，把每行高度重新均分，避免最后一行被挤掉
     $rowPct = [math]::Round(100 / [math]::Max(1, $card.RowCount), 3)
     foreach ($rs in $card.RowStyles) { $rs.Height = $rowPct }
@@ -1850,7 +1856,11 @@ function Update-LayerUi {
         else { $lbConclusion.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175) }
     }
     if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
-    if ($script:badgeLabels) {
+        try {
+        if ($lbLayerDns) { $lbLayerDns.Text = [string]$cache.Dns.Detail }
+        if ($lbLayerDom) { $lbLayerDom.Text = [string]$cache.Domestic.Detail }
+        if ($lbLayerIntl) { $lbLayerIntl.Text = [string]$cache.Intl.Detail }
+    } catch { }if ($script:badgeLabels) {
         foreach ($b in $c.Badges) {
             $label = $script:badgeLabels[$b.Key]
             if (-not $label) { continue }
