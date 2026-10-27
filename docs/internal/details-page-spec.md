@@ -8,7 +8,7 @@
 $detailsPage（Panel 宿主）
  └ $detailScroll（AutoScroll）
     ├ Section 链路      ● 通过   13:20:04
-    │   网卡 WLAN · 网关 172.21.69.254 · 14ms
+    │   网卡 WLAN · 网关 192.0.2.1 · 14ms
     ├ Section DNS       ● 通过   13:20:04
     │   国内可解析 · 境外域名解析失败（可能被污染）
     ├ Section 国内      ● 通过   13:20:04

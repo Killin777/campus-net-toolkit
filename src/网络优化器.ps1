@@ -3836,7 +3836,7 @@ function New-PreviewState {
     $connected = ($Scenario -ne 'Offline')
     $info = [ordered]@{
         SSID = 'CampusNet'; Band = '5 GHz'; Channel = '149'; Signal = '82%'; Rssi = '-58 dBm'
-        IP = '10.21.36.88'; Gateway = '10.21.36.1'; DNS = '10.21.0.2, 223.5.5.5'
+        IP = '192.0.2.88'; Gateway = '192.0.2.1'; DNS = '192.0.2.53, 223.5.5.5'
         Adapter = 'WLAN'; Link = '866 Mbps'; ProxyOn = $false; ProxyPort = $false
         ProxyNum = 7897; ProxyKnown = $true; ProxyEndpoint = ''; PacUrl = ''
         ConnectionType = 'Wireless'; InterfaceIndex = 12; LinkSpeedMbps = 866

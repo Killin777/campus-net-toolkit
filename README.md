@@ -113,7 +113,7 @@ EXE 内置全部程序资源，**可单独复制使用**，不需要安装任何
   "portalUrl": "http://10.0.0.1/0.htm",
   "ssid": "Campus-WiFi",
   "ssidOpen": true,
-  "internalNets": ["172.18.", "172.21.", "172.22."]
+  "internalNets": ["172.16.", "172.20."]
 }
 ```
 
