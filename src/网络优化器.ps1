@@ -1839,7 +1839,9 @@ function Update-LayerUi {
 
     if ($lbConclusion) {
         $lbConclusion.Text = $c.Title
-        try { $lbConclusion.ForeColor = Get-StatusColor $c.Severity } catch { }
+        if ($c.Severity -eq 'Ok') { $lbConclusion.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153) }
+        elseif ($c.Severity -eq 'Degraded' -or $c.Severity -eq 'NeedsAuth') { $lbConclusion.ForeColor = [System.Drawing.Color]::FromArgb(251,191,36) }
+        else { $lbConclusion.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175) }
     }
     if ($lbConclusionDetail -and $c.Detail) { $lbConclusionDetail.Text = $c.Detail }
     if ($script:badgeLabels) {
@@ -1847,7 +1849,10 @@ function Update-LayerUi {
             $label = $script:badgeLabels[$b.Key]
             if (-not $label) { continue }
             $label.Text = ([string]$b.Mark) + ' ' + $b.Key
-            try { $label.ForeColor = Get-StatusColor $b.State } catch { }
+            if ($b.State -eq 'Ok') { $label.ForeColor = [System.Drawing.Color]::FromArgb(52,211,153) }
+            elseif ($b.State -eq 'Fail') { $label.ForeColor = [System.Drawing.Color]::FromArgb(248,113,113) }
+            else { $label.ForeColor = [System.Drawing.Color]::FromArgb(156,163,175) }
+            $label.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
         }
     }
 }
