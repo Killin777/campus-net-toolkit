@@ -51,6 +51,10 @@ if ($DataDirectory) { $script:DataRoot = $DataDirectory }
 . (Join-Path $PSScriptRoot 'lib\NetProbe.ps1')
 . (Join-Path $PSScriptRoot 'lib\NetworkMonitor.ps1')
 . (Join-Path $PSScriptRoot 'lib\LinkHistory.ps1')
+# RouteGuard 以函数方式点源：逐项处理要拿到结构化报告对象，不能再走子进程
+$prevNoRun = $NoRun
+. (Join-Path $PSScriptRoot 'lib\RouteGuard.ps1') -NoRun
+$NoRun = $prevNoRun
 . (Join-Path $PSScriptRoot 'lib\RouteRepair.ps1')
 . (Join-Path $PSScriptRoot 'lib\WiredCheck.ps1')
 $ErrorActionPreference = 'Stop'
@@ -647,24 +651,35 @@ $repairLayout.RowCount = 4
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
 [void]$repairLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',128)))
 $repairsPage.Controls.Add($repairLayout)
-    $lbRepairSummary = New-TextLabel $repairLayout '逐项修复尚未启用：底层 RouteRepair 模块已完成并通过 28 项测试，界面接线进行中。当前请用「路由守卫」查看问题、按提示手动处理。' 11
-    $lbRepairSummary.ForeColor = $C.Warn
-$lbRepairSummary.Dock = 'Fill'
+    $lbRepairSummary = New-TextLabel $repairLayout '逐项处理只改一处：先写备份，改完读回复检，可单独撤销。修改接口跃点需要管理员权限；关闭手动代理不需要。' 11
+    $lbRepairSummary.ForeColor = $C.Dim
+    $lbRepairSummary.AutoSize = $false
+    $lbRepairSummary.Dock = 'Fill'
 $repairLayout.SetCellPosition($lbRepairSummary,(New-Object Windows.Forms.TableLayoutPanelCellPosition(0,0)))
 $repairActions = New-Object Windows.Forms.FlowLayoutPanel
 $repairActions.Dock = 'Fill'
 $repairLayout.Controls.Add($repairActions,0,1)
 $bScanRepairs = New-AppButton $repairActions '检测可处理项' $false 160
-    $bScanRepairs.Enabled = $false
-    try { if ($bApplyRepairs) { $bApplyRepairs.Enabled = $false } } catch { }
 $bApplyRepairs = New-AppButton $repairActions '应用已选项' $true 160
 $bApplyRepairs.Enabled = $false
-$repairRows = New-Object Windows.Forms.FlowLayoutPanel
+$bApplyRepairs.BackColor = [System.Drawing.Color]::FromArgb(0x2E,0x33,0x3C)
+$bApplyRepairs.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+$script:repairChecks = @()
+$script:repairTexts = @()
+$repairRows = New-Object Windows.Forms.TableLayoutPanel
 $repairRows.Dock = 'Fill'
-$repairRows.FlowDirection = 'TopDown'
-$repairRows.WrapContents = $false
+$repairRows.ColumnCount = 1
+$repairRows.RowCount = 0
+$repairRows.GrowStyle = 'AddRows'
 $repairRows.AutoScroll = $true
+$repairRows.BackColor = $C.Bg
 $repairLayout.Controls.Add($repairRows,0,2)
+$repairRows.Add_Resize({
+    $wrapWidth = [Math]::Max(320, $repairRows.ClientSize.Width - 48)
+    foreach ($repairLabel in @($script:repairTexts)) {
+        if ($repairLabel) { $repairLabel.MaximumSize = New-Object Drawing.Size($wrapWidth,0) }
+    }
+})
 $repairHistoryBox = New-Object Windows.Forms.TableLayoutPanel
 $repairHistoryBox.Dock = 'Fill'
 $repairHistoryBox.ColumnCount = 2
@@ -675,14 +690,32 @@ $repairHistoryList = New-Object Windows.Forms.ListBox
 $repairHistoryList.Dock = 'Fill'
 $repairHistoryList.BackColor = $C.Card
 $repairHistoryList.ForeColor = $C.Text
+$repairHistoryList.BorderStyle = 'None'
+$repairHistoryList.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
 $repairHistoryList.DisplayMember = 'Display'
-$repairHistoryBox.Controls.Add($repairHistoryList,0,0)
+$historyLeft = New-Object Windows.Forms.TableLayoutPanel
+$historyLeft.Dock = 'Fill'
+$historyLeft.ColumnCount = 1
+$historyLeft.RowCount = 2
+[void]$historyLeft.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',20)))
+[void]$historyLeft.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+$historyLeft.Margin = New-Object Windows.Forms.Padding(0)
+$historyLabel = New-Object Windows.Forms.Label
+$historyLabel.Text = '处理记录（选中一条可撤销，只恢复这一项）'
+$historyLabel.Dock = 'Fill'
+$historyLabel.TextAlign = 'MiddleLeft'
+$historyLabel.Margin = New-Object Windows.Forms.Padding(0)
+$historyLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
+$historyLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+$historyLeft.Controls.Add($historyLabel,0,0)
+$historyLeft.Controls.Add($repairHistoryList,0,1)
+$repairHistoryBox.Controls.Add($historyLeft,0,0)
 $historyButtons = New-Object Windows.Forms.FlowLayoutPanel
 $historyButtons.Dock = 'Fill'
 $historyButtons.FlowDirection = 'TopDown'
 $repairHistoryBox.Controls.Add($historyButtons,1,0)
 $bUndoRepair = New-AppButton $historyButtons '撤销所选记录' $false 150
-$bViewBackup = New-AppButton $historyButtons '查看备份文件' $false 150
+$bViewBackup = New-AppButton $historyButtons '打开记录文件' $false 150
 $bUndoRepair.Enabled = $false
 $bViewBackup.Enabled = $false
 $repairHistoryList.Add_SelectedIndexChanged({ $bUndoRepair.Enabled = $repairHistoryList.SelectedIndex -ge 0 -and -not $script:busy; $bViewBackup.Enabled = $repairHistoryList.SelectedIndex -ge 0 })
@@ -821,7 +854,7 @@ function Set-Busy {
     param([bool]$On)
     $script:busy=$On
     $form.Cursor=if ($On) { [Windows.Forms.Cursors]::WaitCursor } else { [Windows.Forms.Cursors]::Default }
-    foreach ($button in @($bCheck,$bOpt,$bDns,$bLatency,$bLowLat,$bProxy,$bRescue,$bReport,$bRestore,$bFolder,$bTimeline,$bProxyOn,$bProxyOff,$bSettings)) {
+    foreach ($button in @($bCheck,$bOpt,$bDns,$bLatency,$bLowLat,$bProxy,$bRescue,$bReport,$bRestore,$bFolder,$bTimeline,$bProxyOn,$bProxyOff,$bSettings,$bScanRepairs)) {
         if ($button) { $button.Enabled = -not $On }
     }
     $badge.Enabled = -not $On
@@ -2802,7 +2835,187 @@ function Invoke-LibCheck {
 }
 
 function Invoke-CampusCheck { Invoke-LibCheck 'lib\CampusCheck.ps1' '校园网体检' }
-function Invoke-RouteGuard  { Invoke-LibCheck 'lib\RouteGuard.ps1'  '路由守卫' }
+
+# ============================ 逐项处理 ============================
+function New-RepairRow {
+    param($Item)
+    $row = New-Object Windows.Forms.TableLayoutPanel
+    $row.Dock = 'Top'
+    $row.AutoSize = $true
+    $row.ColumnCount = 2
+    $row.RowCount = 1
+    [void]$row.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute',28)))
+    [void]$row.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent',100)))
+    $row.Margin = New-Object Windows.Forms.Padding(0)
+    $row.BackColor = $C.Bg
+    $check = New-Object Windows.Forms.CheckBox
+    $check.Text = ''
+    $check.Dock = 'Top'
+    $check.Width = 20
+    $check.Height = 20
+    $check.Margin = New-Object Windows.Forms.Padding(2,4,0,0)
+    $check.Tag = $Item
+    $row.Controls.Add($check,0,0)
+
+    $target = ''
+    if ($Item.Type -eq 'InterfaceMetric') {
+        $target = '接口跃点 ' + [string]$Item.Before.InterfaceMetric + ' → ' + [string]$Item.Desired.InterfaceMetric + '，关闭自动跃点'
+    } elseif ($Item.Type -eq 'ManualProxyDisable') {
+        $target = '关闭手动系统代理开关（代理地址与 PAC 保持原值）'
+    }
+    $perm = if ($Item.RequiresAdmin) { '需要管理员权限' } else { '不需要管理员权限' }
+    $text = $Item.Title + "`r`n证据：" + $Item.Evidence + "`r`n改动：" + $target + '（' + $perm + '）' + "`r`n影响：" + $Item.Impact
+    $label = New-Object Windows.Forms.Label
+    $label.AutoSize = $true
+    $label.MaximumSize = New-Object Drawing.Size([Math]::Max(320, $repairRows.ClientSize.Width - 48), 0)
+    $label.Margin = New-Object Windows.Forms.Padding(0,2,8,12)
+    $label.Text = $text
+    $label.ForeColor = $C.Text
+    $label.Font = New-Object Drawing.Font('Microsoft YaHei UI',10)
+    $label.Cursor = 'Hand'
+    $label.Add_Click({ $check.Checked = -not $check.Checked })
+    $row.Controls.Add($label,1,0)
+
+    $check.Add_CheckedChanged({ Set-RepairApplyState })
+    $repairRows.RowCount++
+    [void]$repairRows.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+    [void]$repairRows.Controls.Add($row,0,$repairRows.RowCount - 1)
+    $script:repairChecks += $check
+    $script:repairTexts += $label
+}
+
+function Update-RepairItems {
+    param($Report)
+    $repairRows.SuspendLayout()
+    try {
+        $repairRows.Controls.Clear()
+        $repairRows.RowStyles.Clear()
+        $repairRows.RowCount = 0
+        $script:repairChecks = @()
+        $script:repairTexts = @()
+        $items = @(Get-RouteRepairItems -Report $Report)
+        foreach ($item in $items) { New-RepairRow $item }
+        if ($items.Count -eq 0) {
+            $lbRepairSummary.Text = '本次检测没有发现可自动处理的项：默认路由与系统代理按当前证据看是正常的。'
+            $lbRepairSummary.ForeColor = $C.Dim
+        } else {
+            $lbRepairSummary.Text = '本次检测到 ' + [string]$items.Count + ' 项可处理。每项先写备份、改完读回复检，失败会保留记录；默认不勾选，请先看「改动」和「影响」。'
+            $lbRepairSummary.ForeColor = $C.Text
+        }
+    } finally {
+        $repairRows.ResumeLayout()
+    }
+    Set-RepairApplyState
+}
+
+function Set-RepairApplyState {
+    $enabled = (@($script:repairChecks | Where-Object { $_.Checked }).Count -gt 0)
+    $bApplyRepairs.Enabled = $enabled
+    if ($enabled) {
+        $bApplyRepairs.BackColor = [System.Drawing.Color]::FromArgb(0x25,0x63,0xEB)
+        $bApplyRepairs.ForeColor = [System.Drawing.Color]::White
+    } else {
+        $bApplyRepairs.BackColor = [System.Drawing.Color]::FromArgb(0x2E,0x33,0x3C)
+        $bApplyRepairs.ForeColor = [System.Drawing.Color]::FromArgb(0x9A,0xA1,0xAE)
+    }
+}
+
+function Update-RepairHistory {
+    $repairHistoryList.BeginUpdate()
+    try {
+        $repairHistoryList.Items.Clear()
+        $records = @()
+        try { $records = @(Get-RouteRepairHistory) } catch { Write-Log ('读取处理记录失败：' + $_.Exception.Message) 'warn' }
+        foreach ($record in $records) {
+            $state = if ($record.Restored) { '已撤销' } elseif ($record.Verified) { '已应用' } elseif ($record.Applied) { '部分生效' } else { '未生效' }
+            $typeName = switch ([string]$record.Type) { 'InterfaceMetric' { '接口跃点' } 'ManualProxyDisable' { '手动代理' } default { [string]$record.Type } }
+            $when = [string]$record.SavedAt
+            try { $when = ([datetime]$record.SavedAt).ToString('MM-dd HH:mm:ss') } catch { }
+            $record | Add-Member NoteProperty Display ($when + ' · ' + $typeName + ' · ' + $state) -Force
+            [void]$repairHistoryList.Items.Add($record)
+        }
+    } finally {
+        $repairHistoryList.EndUpdate()
+    }
+    $bUndoRepair.Enabled = $false
+    $bViewBackup.Enabled = ($repairHistoryList.Items.Count -gt 0)
+}
+
+function Invoke-RepairScan {
+    Set-Busy $true
+    try {
+        Write-Log '扫描逐项处理项 …' 'dim'
+        $report = Get-RouteGuardReport
+        Update-RepairItems $report
+        Update-RepairHistory
+        Write-Log ('扫描完成：' + [string]@($script:repairChecks).Count + ' 项可处理，' + [string]$repairHistoryList.Items.Count + ' 条历史记录') 'ok'
+    } catch {
+        Write-Log ('扫描失败：' + $_.Exception.Message) 'err'
+    } finally {
+        Set-Busy $false
+    }
+}
+
+function Invoke-ApplyRepairs {
+    $selected = @($script:repairChecks | Where-Object { $_.Checked })
+    if ($selected.Count -eq 0) { Write-Log '先勾选要处理的项。' 'warn'; return }
+    $needAdmin = (@($selected | Where-Object { $_.Tag.RequiresAdmin }).Count -gt 0)
+    if ($needAdmin -and -not (Test-AdminAccess)) { return }
+    $confirm = [Windows.Forms.MessageBox]::Show(('将处理 ' + [string]$selected.Count + ' 项。每项先写备份再写入，改完读回复检。继续？'), '逐项处理', 'YesNo', 'Question')
+    if ($confirm -ne 'Yes') { return }
+    Set-Busy $true
+    $okCount = 0
+    $failCount = 0
+    try {
+        foreach ($check in $selected) {
+            $item = $check.Tag
+            Write-Log ('处理：' + $item.Title) 'dim'
+            $res = Invoke-RouteRepairItem -Item $item
+            if ($res.Ok) {
+                $okCount++
+                Write-Log '  已应用并复检通过。' 'ok'
+            } else {
+                $failCount++
+                $msg = if ($res.Error) { $res.Error } else { '写入后复检未通过' }
+                Write-Log ('  未完成：' + $msg) 'err'
+            }
+            if ($res.RecordPath) { Write-Log ('  记录：' + $res.RecordPath) 'dim' }
+        }
+    } catch {
+        Write-Log ('处理失败：' + $_.Exception.Message) 'err'
+    } finally {
+        Set-Busy $false
+    }
+    Write-Log ('处理结束：成功 ' + [string]$okCount + ' 项，未完成 ' + [string]$failCount + ' 项') $(if ($failCount -gt 0) { 'warn' } else { 'ok' })
+    Update-RepairHistory
+    try { Update-RepairItems (Get-RouteGuardReport) } catch { }
+}
+
+function Invoke-UndoRepair {
+    if ($repairHistoryList.SelectedIndex -lt 0) { Write-Log '先在下方记录里选中一条。' 'warn'; return }
+    $record = $repairHistoryList.SelectedItem
+    if (-not $record -or -not $record.RecordPath) { return }
+    if ($record.Restored) { Write-Log '这条记录已经撤销过。' 'warn'; return }
+    if ([Windows.Forms.MessageBox]::Show('按这条记录把该项恢复到修改前的值？只影响这一项。', '撤销逐项处理', 'YesNo', 'Question') -ne 'Yes') { return }
+    Set-Busy $true
+    try {
+        $res = Undo-RouteRepairItem -RecordPath $record.RecordPath
+        if ($res.Ok) { Write-Log '已恢复并复检通过。' 'ok' }
+        else { Write-Log ('撤销未完成：' + $res.Error) 'err' }
+    } catch {
+        Write-Log ('撤销失败：' + $_.Exception.Message) 'err'
+    } finally {
+        Set-Busy $false
+    }
+    Update-RepairHistory
+}
+
+function Invoke-OpenRepairRecord {
+    $record = $repairHistoryList.SelectedItem
+    $path = if ($record -and $record.RecordPath) { [string]$record.RecordPath } else { Join-Path $script:DataRoot 'runtime' }
+    if (-not (Test-Path -LiteralPath $path)) { Write-Log ('找不到：' + $path) 'warn'; return }
+    try { Start-Process -FilePath $path } catch { Write-Log ('无法打开：' + $_.Exception.Message) 'err' }
+}
 
 function Show-HelpWindow {
     $w = New-Object System.Windows.Forms.Form
@@ -2950,7 +3163,11 @@ $bCheck.Add_Click({ Invoke-Check })
 $bOpt.Add_Click({ Invoke-CampusCheck })
 $bDns.Add_Click({ if (Test-AdminAccess) { Set-Busy $true; try { Invoke-DnsOptimize } catch { Write-Log $_.Exception.Message 'err' } finally { Set-Busy $false } } })
 $bLatency.Add_Click({ Invoke-LatencyTest })
-$bLowLat.Add_Click({ Invoke-RouteGuard })
+$bLowLat.Add_Click({ Show-Page 2; Invoke-RepairScan })
+$bScanRepairs.Add_Click({ Invoke-RepairScan })
+$bApplyRepairs.Add_Click({ Invoke-ApplyRepairs })
+$bUndoRepair.Add_Click({ Invoke-UndoRepair })
+$bViewBackup.Add_Click({ Invoke-OpenRepairRecord })
     $bProxy.Add_Click({ Open-CampusLogin })
 $bRescue.Add_Click({ if (Test-AdminAccess) { Invoke-Rescue } })
 $bReport.Add_Click({ Invoke-ExportReport })
@@ -3014,6 +3231,7 @@ $form.Add_Shown({
 
     Update-Status | Out-Null
     Write-Log '就绪。建议先点「一键体检」了解现状。' 'dim'
+    try { Update-RepairHistory } catch { }
 
     # 启动后台监测器（只读；失败时记录到日志，不影响界面）
     try {
@@ -3090,6 +3308,21 @@ function New-PreviewState {
     }
 }
 
+# 预览用路由报告：只给 -Repairs -Screenshot 出图用，不读取也不修改系统
+function New-PreviewRepairReport {
+    [pscustomobject]@{
+        MetricCandidates = @([pscustomobject]@{
+            InterfaceIndex = 11; InterfaceAlias = 'VPN 虚拟网卡'
+            InterfaceMetric = 5; AutomaticMetric = 'Enabled'
+            HardwareVirtual = $true; HasRoute = $true; Competing = $true
+            RouteMetric = 1; RouteCost = 6
+            PhysicalInterfaceIndex = 22; PhysicalInterfaceAlias = 'WLAN'; PhysicalCost = 26
+        })
+        ProxyEvidence = [pscustomobject]@{ ManualDisableSupported = $true }
+        SystemProxy = [pscustomobject]@{ ProxyEnableExists = $true; ProxyEnableValue = 1; Enabled = $true; Server = '127.0.0.1:7897' }
+    }
+}
+
 if ($Screenshot) {
     $form.Show()
     [System.Windows.Forms.Application]::DoEvents()
@@ -3099,7 +3332,11 @@ if ($Screenshot) {
         New-PreviewState $PreviewScenario
     }
     if ($Details) { Show-Page 1 }
-    elseif ($Repairs) { Show-Page 2 }
+    elseif ($Repairs) {
+        Show-Page 2
+        if ($PreviewScenario) { Update-RepairItems (New-PreviewRepairReport) }
+        else { Invoke-RepairScan }
+    }
     elseif ($Tools) { Show-Page 3 }
     Update-Status | Out-Null
     if ($PreviewScenario) { Update-LayerUi }
