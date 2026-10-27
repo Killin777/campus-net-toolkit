@@ -1725,7 +1725,7 @@ function Request-StatusRefresh {
 }
 
 function Open-CampusLogin {
-    $snapshot = $script:networkSnapshot
+    $snapshot = $script:lastSnapshot
     if (-not $snapshot) {
         Write-Log '请等待本轮检测完成，再打开登录页。' 'warn'
         Request-StatusRefresh
@@ -3761,7 +3761,7 @@ $timer.Add_Tick({
 $form.Add_FormClosing({
     param($sender,$closingArgs)
     if ($script:busy) { $closingArgs.Cancel=$true; Write-Log '请等待当前操作结束后关闭，以免中断状态保存。' 'warn'; return }
-    foreach ($activeTimer in @($timer,$script:wifiTimer,$script:monitorUiTimer,$script:portalTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
+    foreach ($activeTimer in @($timer,$script:wifiTimer,$script:monitorUiTimer,$script:autoCloseTimer)) { if ($activeTimer) { $activeTimer.Stop(); $activeTimer.Dispose() } }
     try { if ($script:monitor) { Stop-NetworkMonitor -Monitor $script:monitor } } catch { }
     $restoreMenu.Dispose()
     try { $proxyMenu.Dispose() } catch { }

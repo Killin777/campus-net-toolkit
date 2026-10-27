@@ -41,9 +41,31 @@ Test-Case '源码里调用的项目函数都有定义' {
     }
     Assert-True ($missing.Count -eq 0) ('调用了未定义的函数：' + ($missing -join ', '))
 }
+Test-Case '源码里没有只读不写的脚本变量' {
+    $sourceFiles = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter '*.ps1')
+    $reads = @{}
+    $writes = @{}
+    foreach ($file in $sourceFiles) {
+        $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+        $fileAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) |
+            ForEach-Object {
+                $variablePath = $_.VariablePath
+                if (-not $variablePath.IsGlobal -and -not $variablePath.IsScript) { return }
+                $variableName = $variablePath.UserPath -replace '^(script|global):', ''
+                $parent = $_.Parent
+                $isWrite = $false
+                if ($parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($parent.Left, $_)) { $isWrite = $true }
+                if ($parent -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus') -contains [string]$parent.TokenKind) { $isWrite = $true }
+                if ($isWrite) { $writes[$variableName] = $true } else { $reads[$variableName] = $true }
+            }
+    }
+    $neverWritten = @()
+    foreach ($variableName in $reads.Keys) { if (-not $writes.ContainsKey($variableName)) { $neverWritten += $variableName } }
+    Assert-True ($neverWritten.Count -eq 0) ('只读不写的脚本变量：' + (($neverWritten | Sort-Object) -join ', '))
+}
 Test-Case '未知状态登录先复检，不开页或切网' {
     . (Import-Function $main 'Open-CampusLogin')
-    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Unknown' } }
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Unknown' } }
     $script:refreshCalls = 0; $script:browserCalls = 0
     function Request-StatusRefresh { $script:refreshCalls++ }
     function Start-Process { $script:browserCalls++ }
@@ -53,7 +75,7 @@ Test-Case '未知状态登录先复检，不开页或切网' {
 }
 Test-Case '缺少认证网址直接引导设置' {
     . (Import-Function $main 'Open-CampusLogin')
-    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' } }
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' } }
     $script:settingsCalls = 0
     function Get-CampusConfig { $null }
     function Show-SettingsWindow { $script:settingsCalls++ }

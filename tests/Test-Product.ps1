@@ -143,7 +143,7 @@ Test-Case '单个接口读不到跃点不会中断整轮备份' {
 }
 Test-Case '校园网已联网时登录立即结束且不改代理和 DNS' {
     . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
-    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Online' }; Info=[pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true }; Quality=[pscustomobject]@{ Known=$true; Kind='Online' } }
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Online' }; Info=[pscustomobject]@{ ConnectionType='WiFi'; SSID='test-campus'; ProxyOn=$true }; Quality=[pscustomobject]@{ Known=$true; Kind='Online' } }
     $script:loginSideEffects = 0
     function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
     function Get-CurrentWifiSsid { 'test-campus' }
@@ -160,7 +160,7 @@ Test-Case '校园网已联网时登录立即结束且不改代理和 DNS' {
 }
 Test-Case '无 SSID 的有线认证不会切换 WiFi' {
     . (Import-Function (Join-Path $root 'src\网络优化器.ps1') 'Open-CampusLogin')
-    $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' }; Info=[pscustomobject]@{ ConnectionType='Ethernet'; SSID='—'; ProxyOn=$false }; Quality=[pscustomobject]@{ Known=$true; Kind='NeedsAuth' } }
+    $script:lastSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='NeedsAuth' }; Info=[pscustomobject]@{ ConnectionType='Ethernet'; SSID='—'; ProxyOn=$false }; Quality=[pscustomobject]@{ Known=$true; Kind='NeedsAuth' } }
     $script:loginWifiCalls = 0; $script:loginBrowserCalls = 0
     function Get-CampusConfig { [pscustomobject]@{ portalUrl='http://portal.test/'; ssid='test-campus' } }
     function Get-CurrentWifiSsid { '' }
