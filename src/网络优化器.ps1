@@ -1714,6 +1714,13 @@ function Connect-CampusWifi([string]$Ssid, [bool]$IsOpen = $false) {
     return $false
 }
 
+function Request-StatusRefresh {
+    # 旧调用点沿用这个名字：请求后台监测器尽快给一份新快照，不阻塞界面
+    try {
+        if ($script:monitor) { Request-NetworkMonitorRefresh -Monitor $script:monitor }
+    } catch { }
+}
+
 function Open-CampusLogin {
     $snapshot = $script:networkSnapshot
     if (-not $snapshot) {

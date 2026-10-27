@@ -19,6 +19,28 @@ function Import-Function($path, $name) {
     return [scriptblock]::Create($fn.Extent.Text)
 }
 $main = Join-Path $root 'src\网络优化器.ps1'
+Test-Case '源码里调用的项目函数都有定义' {
+    $sourceFiles = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter '*.ps1')
+    $defined = @{}
+    foreach ($file in $sourceFiles) {
+        $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+        $fileAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+            ForEach-Object { $defined[$_.Name] = $true }
+    }
+    $missing = @()
+    foreach ($file in $sourceFiles) {
+        $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+        $fileAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
+            ForEach-Object {
+                $commandName = $_.GetCommandName()
+                if (-not $commandName -or $commandName -notmatch '^[A-Za-z]+-[A-Za-z0-9]+$') { return }
+                if ($defined.ContainsKey($commandName)) { return }
+                if (Get-Command $commandName -ErrorAction SilentlyContinue) { return }
+                if ($missing -notcontains $commandName) { $missing += $commandName }
+            }
+    }
+    Assert-True ($missing.Count -eq 0) ('调用了未定义的函数：' + ($missing -join ', '))
+}
 Test-Case '未知状态登录先复检，不开页或切网' {
     . (Import-Function $main 'Open-CampusLogin')
     $script:networkSnapshot = [pscustomobject]@{ Conclusion=[pscustomobject]@{ State='Unknown' } }
