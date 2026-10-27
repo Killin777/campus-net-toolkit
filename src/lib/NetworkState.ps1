@@ -38,11 +38,15 @@ function Get-DnsSnapshot([string]$InterfaceAlias) {
     $adapter = Get-NetAdapter -Name $InterfaceAlias -ErrorAction Stop
     $guid = '{' + ([guid]$adapter.InterfaceGuid).ToString() + '}'
     $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\' + $guid
-    $reg = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
-    $dns = @(Get-DnsClientServerAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -ErrorAction Stop | Select-Object -ExpandProperty ServerAddresses)
+    # 虚拟网卡（Hyper-V/WSL 的 vEthernet 等）可能没有 DNS 记录或没有 Tcpip 键，
+    # 缺少记录不等于备份失败：按空列表记录，其余网卡照常备份。
+    $nameServer = ''
+    try { $nameServer = [string](Get-ItemProperty -LiteralPath $key -ErrorAction Stop).NameServer } catch { }
+    $dns = @()
+    try { $dns = @(Get-DnsClientServerAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -ErrorAction Stop | Select-Object -ExpandProperty ServerAddresses) } catch { }
     return [pscustomobject]@{
         Interface = $InterfaceAlias; InterfaceGuid = [string]$adapter.InterfaceGuid
-        Automatic = [string]::IsNullOrWhiteSpace([string]$reg.NameServer)
+        Automatic = [string]::IsNullOrWhiteSpace($nameServer)
         Servers = $dns
     }
 }
@@ -110,8 +114,40 @@ function New-NetBackup {
     return $path
 }
 
+function New-WifiBandBackup {
+    param([Parameter(Mandatory = $true)][string]$InterfaceAlias, [Parameter(Mandatory = $true)][string]$RegistryKeyword)
+    $adapter = @(Get-NetAdapter -Name $InterfaceAlias -ErrorAction Stop)
+    $property = @(Get-NetAdapterAdvancedProperty -Name $InterfaceAlias -RegistryKeyword $RegistryKeyword -ErrorAction Stop)
+    if ($adapter.Count -ne 1 -or $property.Count -ne 1 -or $property[0].RegistryKeyword -ne $RegistryKeyword -or @($property[0].RegistryValue).Count -eq 0) { throw '未读取到唯一的无线驱动属性，已中止备份' }
+    $path = Join-Path $script:DataRoot ('runtime\network-backup-' + (Get-Date).ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6) + '.json')
+    $snapshot = [ordered]@{
+        SchemaVersion = 3; Kind = 'WifiBand'; 时间 = (Get-Date).ToString('s')
+        WifiBand = [ordered]@{
+            InterfaceAlias = $InterfaceAlias; InterfaceGuid = [string]$adapter[0].InterfaceGuid
+            RegistryKeyword = $RegistryKeyword; RegistryValue = @($property[0].RegistryValue)
+        }
+    }
+    Save-ToolkitJson $snapshot $path
+    return $path
+}
+
 function Restore-NetBackup([string]$Path) {
     $snap = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($snap.Kind -eq 'WifiBand' -and $snap.SchemaVersion -eq 3) {
+        $band = $snap.WifiBand
+        if ([string]::IsNullOrWhiteSpace([string]$band.InterfaceAlias) -or [string]::IsNullOrWhiteSpace([string]$band.RegistryKeyword) -or @($band.RegistryValue).Count -eq 0) { throw '无线属性备份不完整，保留记录' }
+        $adapter = Get-NetAdapter -ErrorAction Stop | Where-Object { [string]$_.InterfaceGuid -eq [string]$band.InterfaceGuid } | Select-Object -First 1
+        if (-not $adapter) { throw '备份中的无线网卡不存在，保留记录，待网卡恢复后重试' }
+        $current = @(Get-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $band.RegistryKeyword -ErrorAction Stop)
+        if ($current.Count -ne 1 -or $current[0].RegistryKeyword -ne $band.RegistryKeyword) { throw '未读取到备份对应的唯一无线属性，保留记录' }
+        $original = @($band.RegistryValue)
+        if ((@($current[0].RegistryValue) -join [char]0) -eq ($original -join [char]0)) { return }
+        Add-IgnoreWindow '恢复无线频段偏好' 30
+        Set-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $band.RegistryKeyword -RegistryValue $original -NoRestart -ErrorAction Stop
+        $after = @(Get-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $band.RegistryKeyword -ErrorAction Stop)
+        if ($after.Count -ne 1 -or (@($after[0].RegistryValue) -join [char]0) -ne ($original -join [char]0)) { throw '无线属性恢复后复检未达到原值，保留备份以便重试' }
+        return
+    }
     if (-not $snap.DNS -and -not $snap.跃点) { throw '文件不包含网络备份' }
     foreach ($p in $snap.DNS.PSObject.Properties) {
         $dns = if ($p.Value.PSObject.Properties['Servers']) { $p.Value } else { [pscustomobject]@{ Interface=$p.Name; Servers=@($p.Value); Automatic=(@($p.Value).Count -eq 0) } }
