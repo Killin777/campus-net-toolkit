@@ -21,6 +21,7 @@ param(
     [switch]$Timeline,
     [switch]$Details,
     [switch]$Repairs,
+    [switch]$Tools,
     [ValidateSet('','Online','NeedsAuth','ProxyIssue','Offline','ExternalFailure','Unknown')]
     [string]$PreviewScenario = '',
     [switch]$Settings,
@@ -367,9 +368,10 @@ $bSettings = New-AppButton $header '设置' $false 105
 $bSettings.Anchor = 'Right'
 $header.SetCellPosition($bSettings,(New-Object Windows.Forms.TableLayoutPanelCellPosition(2,0)))
 
-$pages = New-Object Windows.Forms.TabControl
+# 内容宿主用 Panel：TabControl 会在内容区外圈画 1px 边框，Region 裁切盖不住
+$pages = New-Object Windows.Forms.Panel
 $pages.Dock = 'Fill'
-$pages.Padding = New-Object Drawing.Point(16,9)
+$pages.BackColor = $C.Bg
     # ---- macOS 风格：左侧导航 + 右侧内容（隐藏原生 Tab 头） ----
     $shell = New-Object Windows.Forms.TableLayoutPanel
     $shell.Dock = 'Fill'
@@ -387,12 +389,7 @@ $pages.Padding = New-Object Drawing.Point(16,9)
     $nav.Padding = New-Object Windows.Forms.Padding(0,4,12,0)
     $shell.Controls.Add($nav,0,0)
 
-    $pages.Appearance = 'FlatButtons'
-    $pages.ItemSize = New-Object System.Drawing.Size(0,1)
-    $pages.SizeMode = 'Fixed'
     $shell.Controls.Add($pages,1,0)
-    $pages.Padding = New-Object System.Drawing.Point(0,0)
-    $pages.Add_Resize({ try { $pages.Region = New-Object System.Drawing.Region((New-Object System.Drawing.Rectangle(1,1,[Math]::Max(1,$pages.Width-2),[Math]::Max(1,$pages.Height-2)))) } catch { } })
 
     $script:navItems = @()
     $script:navNames = @('当前网络','检测详情','各项修复','更多工具')
@@ -438,24 +435,33 @@ $pages.Padding = New-Object Drawing.Point(16,9)
             } catch { }
         }
     }
-    foreach ($item in $script:navItems) {
-        $item.Add_Click({
-            $script:navIndex = [int]$this.Tag
-            $pages.SelectedIndex = $script:navIndex
-            & $script:UpdateNav
-        })
+    $script:pageViews = @()
+    function Show-Page {
+        param([int]$Index)
+        if ($Index -lt 0 -or $Index -ge $script:pageViews.Count) { return }
+        for ($pageIndex = 0; $pageIndex -lt $script:pageViews.Count; $pageIndex++) {
+            $script:pageViews[$pageIndex].Visible = ($pageIndex -eq $Index)
+        }
+        $script:navIndex = $Index
+        & $script:UpdateNav
     }
-    & $script:UpdateNav
-$homePage = New-Object Windows.Forms.TabPage('当前网络')
-$detailsPage = New-Object Windows.Forms.TabPage('检测详情')
-$repairsPage = New-Object Windows.Forms.TabPage('逐项修复')
-$toolsPage = New-Object Windows.Forms.TabPage('更多工具')
-foreach ($page in @($homePage,$detailsPage,$repairsPage,$toolsPage)) {
+    foreach ($item in $script:navItems) {
+        $item.Add_Click({ Show-Page ([int]$this.Tag) })
+    }
+$homePage = New-Object Windows.Forms.Panel
+$detailsPage = New-Object Windows.Forms.Panel
+$repairsPage = New-Object Windows.Forms.Panel
+$toolsPage = New-Object Windows.Forms.Panel
+$script:pageViews = @($homePage,$detailsPage,$repairsPage,$toolsPage)
+foreach ($page in $script:pageViews) {
+    $page.Dock = 'Fill'
     $page.BackColor = $C.Bg
     $page.ForeColor = $C.Text
-    $page.Padding = New-Object Windows.Forms.Padding(18)
-    $pages.TabPages.Add($page)
+    $page.Padding = New-Object Windows.Forms.Padding(20)
+    $page.Visible = $false
+    $pages.Controls.Add($page)
 }
+Show-Page 0
 $homePage.AutoScroll = $true
 $homePanel = New-Object Windows.Forms.TableLayoutPanel
 $homePanel.Dock = 'Top'
@@ -480,7 +486,7 @@ $lbCheckedAt = New-TextLabel $homePanel '检测证据：尚未取得' 10
         $bl = New-TextLabel $badgeBar ([string]([char]0x2014) + ' ' + $key) 10
         $bl.Margin = New-Object Windows.Forms.Padding(0,0,18,0)
         $bl.Cursor = 'Hand'
-        $bl.Add_Click({ if ($pages) { $pages.SelectedTab = $detailsPage } })
+        $bl.Add_Click({ Show-Page 1 })
         $script:badgeLabels[$key] = $bl
     }
 $lbCheckedAt.ForeColor = $C.Dim
@@ -2671,8 +2677,8 @@ function Invoke-LibCheck {
     $path = Join-Path $PSScriptRoot $Script
     if (-not (Test-Path $path)) { Write-Log ("缺少 " + $Script) 'err'; return }
     Set-Busy $true
-        # 检查结果写在日志面板（更多工具页），先切过去，否则用户看不到任何反应
-        try { if ($pages -and $pages.TabPages.Count -gt 3) { $pages.SelectedIndex = 3 } } catch { }
+        # 检查结果写在检测详情页的日志面板，先切过去，否则用户看不到任何反应
+        try { Show-Page 1 } catch { }
     try {
         Write-Log ($Title + '（约 10~20 秒）...') 'dim'
         $res = Invoke-ChildCapture -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $path, 'check')
@@ -2825,7 +2831,7 @@ $bCheck.Add_Click({ Invoke-Check })
         if ($lbConclusionDetail) { $lbConclusionDetail.Text = '已请求完整检测，结果会自动更新，界面可继续使用。' }
     })
     $bRefresh.Add_Click({ try { Request-NetworkMonitorRefresh -Monitor $script:monitor } catch { } })
-    $bDetails.Add_Click({ if ($pages) { $pages.SelectedTab = $detailsPage } })
+    $bDetails.Add_Click({ Show-Page 1 })
 
     # 有线检查：复用最近一次后台快照，点击时不重新探测
     $bWiredHome.Add_Click({
@@ -2940,6 +2946,10 @@ $log.Focus() | Out-Null
 if ($Screenshot) {
     $form.Show()
     [System.Windows.Forms.Application]::DoEvents()
+    # -Details / -Repairs 与 -Screenshot 组合，用于抓取非首页的界面
+    if ($Details) { Show-Page 1 }
+    elseif ($Repairs) { Show-Page 2 }
+    elseif ($Tools) { Show-Page 3 }
     Update-Status | Out-Null
     Write-Log '界面预览' 'dim'
     Write-Log '示例日志行' 'ok'
